@@ -1,0 +1,2 @@
+Flask==3.0.2
+withings-sync==4.2.4

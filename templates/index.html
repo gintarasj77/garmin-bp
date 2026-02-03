@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CSV to Garmin FIT</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0f172a;
+      --card: #111827;
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-dark: #0ea5e9;
+      --danger: #ef4444;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      background: radial-gradient(circle at top, #1e293b, var(--bg));
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .card {
+      background: var(--card);
+      padding: 32px;
+      border-radius: 18px;
+      width: min(520px, 100%);
+      box-shadow: 0 24px 60px rgba(15, 23, 42, 0.35);
+    }
+
+    h1 {
+      font-size: 1.8rem;
+      margin: 0 0 12px;
+    }
+
+    p {
+      color: var(--muted);
+      margin: 0 0 24px;
+      line-height: 1.5;
+    }
+
+    label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
+    input[type="file"] {
+      width: 100%;
+      padding: 12px;
+      background: #0b1220;
+      border: 1px solid #1f2937;
+      color: var(--text);
+      border-radius: 10px;
+    }
+
+    button {
+      margin-top: 20px;
+      width: 100%;
+      padding: 12px 16px;
+      border: none;
+      border-radius: 10px;
+      background: var(--accent);
+      color: #031323;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.1s ease, background 0.2s ease;
+    }
+
+    button:hover {
+      background: var(--accent-dark);
+      transform: translateY(-1px);
+    }
+
+    .error {
+      margin-top: 16px;
+      padding: 12px;
+      border-radius: 10px;
+      background: rgba(239, 68, 68, 0.12);
+      color: var(--danger);
+      font-weight: 600;
+    }
+
+    .note {
+      margin-top: 16px;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>CSV to Garmin FIT</h1>
+    <p>Upload your Omron CSV export and download a Garmin-compatible FIT file.</p>
+    <form id="convert-form" action="/convert" method="post" enctype="multipart/form-data">
+      <label for="csv_file">CSV file</label>
+      <input id="csv_file" name="csv_file" type="file" accept=".csv" required />
+      <button type="submit" data-mode="fetch">Convert to FIT</button>
+    </form>
+    {% if error %}
+      <div class="error" id="error-box">{{ error }}</div>
+    {% else %}
+      <div class="error" id="error-box" style="display: none;"></div>
+    {% endif %}
+    <div class="note">We never store your data. The conversion happens in memory.</div>
+  </div>
+  <script>
+    const form = document.getElementById('convert-form');
+    const errorBox = document.getElementById('error-box');
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      errorBox.style.display = 'none';
+      errorBox.textContent = '';
+
+      const formData = new FormData(form);
+
+      try {
+        const response = await fetch('/convert', {
+          method: 'POST',
+          body: formData,
+          headers: { 'Accept': 'application/json' }
+        });
+
+        if (!response.ok) {
+          let message = 'Conversion failed.';
+          try {
+            const data = await response.json();
+            if (data.error) {
+              message = data.error;
+            }
+          } catch {
+            // ignore
+          }
+          errorBox.textContent = message;
+          errorBox.style.display = 'block';
+          return;
+        }
+
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'blood_pressure_withings.fit';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        errorBox.textContent = 'Download failed. Try again or use a regular browser.';
+        errorBox.style.display = 'block';
+      }
+    });
+  </script>
+</body>
+</html>
