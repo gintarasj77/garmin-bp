@@ -187,7 +187,7 @@ def upload_fit_to_garmin(fit_bytes: bytes) -> dict[str, str] | str:
         tmp_path = tmp.name
 
     try:
-        session = getattr(garth.client, 'session', garth.client)
+        session = garth.client.session
         with open(tmp_path, 'rb') as fit_file:
             files = {
                 'file': ('blood_pressure_withings.fit', fit_file, 'application/octet-stream')
