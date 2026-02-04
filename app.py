@@ -198,51 +198,59 @@ def get_garmin_session():
 
 
 def upload_fit_to_garmin(fit_bytes: bytes) -> dict[str, str] | str:
-    """Upload FIT bytes to Garmin Connect using connectapi endpoint."""
+    """Upload FIT bytes to Garmin Connect using the authenticated requests session."""
     import sys
-    with tempfile.NamedTemporaryFile(mode='wb', suffix='.fit', delete=False) as tmp:
-        tmp.write(fit_bytes)
-        tmp_path = tmp.name
-
+    import requests
+    
+    print(f'[DEBUG] Attempting upload, size: {len(fit_bytes)} bytes', file=sys.stderr)
+    
     try:
-        print(f'[DEBUG] Temp file created: {tmp_path}, size: {len(fit_bytes)} bytes', file=sys.stderr)
+        # Get the underlying requests session from garth
+        # garth.connectapi uses this internally, so it has the right auth
+        session = getattr(garth.client, '_session', None)
+        if session is None:
+            # Try alternative ways to get the session
+            for attr in ('session', '_session', '__session'):
+                session = getattr(garth.client, attr, None)
+                if session is not None:
+                    break
         
-        with open(tmp_path, 'rb') as fit_file:
-            file_data = fit_file.read()
+        if session is None:
+            # If we can't get the session, create a request using connectapi with different approach
+            print(f'[DEBUG] No session found, trying direct client approach', file=sys.stderr)
+            # Try using garth's internal request method
+            session = requests.Session()
+            # Copy auth headers from garth client if possible
+            if hasattr(garth.client, 'headers'):
+                session.headers.update(garth.client.headers)
         
-        print(f'[DEBUG] File read, size: {len(file_data)} bytes, uploading via connectapi...', file=sys.stderr)
+        print(f'[DEBUG] Using session type: {type(session)}', file=sys.stderr)
         
-        # Use connectapi to POST the file to upload-service endpoint
-        response = garth.connectapi(
-            '/upload-service/upload',
-            method='POST',
-            files={'file': ('blood_pressure_withings.fit', file_data, 'application/octet-stream')}
-        )
+        # Create multipart form data
+        files = {'file': ('blood_pressure_withings.fit', io.BytesIO(fit_bytes), 'application/octet-stream')}
         
-        print(f'[DEBUG] Upload response: {response}', file=sys.stderr)
-
-        if not response:
-            print(f'[DEBUG] Empty response from upload, treating as success', file=sys.stderr)
+        # POST to upload endpoint
+        url = 'https://connect.garmin.com/upload-service/upload'
+        print(f'[DEBUG] POSTing to {url}', file=sys.stderr)
+        
+        response = session.post(url, files=files)
+        print(f'[DEBUG] Response status: {response.status_code}', file=sys.stderr)
+        print(f'[DEBUG] Response text: {response.text}', file=sys.stderr)
+        
+        if response.status_code not in (200, 201, 202, 204):
+            raise ValueError(f'Upload failed: {response.status_code} {response.text}')
+        
+        try:
+            result = response.json() if response.text else {'status': 'success'}
+            print(f'[DEBUG] Upload response: {result}', file=sys.stderr)
+            return result
+        except Exception as e:
+            print(f'[DEBUG] Could not parse JSON: {e}, treating as success', file=sys.stderr)
             return {'status': 'success', 'message': 'File uploaded successfully'}
-
-        # Check for failures in response if present
-        failures = None
-        if isinstance(response, dict):
-            detailed = response.get('detailedImportResult') or {}
-            failures = detailed.get('failures')
-
-        if failures:
-            raise ValueError(f'Garmin upload failed: {failures}')
-
-        print(f'[DEBUG] Upload successful', file=sys.stderr)
-        return response
+            
     except Exception as e:
         print(f'[DEBUG] Upload exception: {type(e).__name__}: {str(e)}', file=sys.stderr)
         raise
-    finally:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-            print(f'[DEBUG] Temp file cleaned up', file=sys.stderr)
 
 
 def wants_json() -> bool:
