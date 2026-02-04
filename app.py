@@ -198,32 +198,28 @@ def get_garmin_session():
 
 
 def upload_fit_to_garmin(fit_bytes: bytes) -> dict[str, str] | str:
-    """Upload FIT bytes to Garmin Connect using the upload-service endpoint."""
+    """Upload FIT bytes to Garmin Connect using garth client upload."""
     with tempfile.NamedTemporaryFile(mode='wb', suffix='.fit', delete=False) as tmp:
         tmp.write(fit_bytes)
         tmp_path = tmp.name
 
     try:
-        session = get_garmin_session()
-        if session is None:
-            raise ValueError('Garmin session not available. Please re-connect your Garmin account.')
         with open(tmp_path, 'rb') as fit_file:
-            files = {
-                'file': ('blood_pressure_withings.fit', fit_file, 'application/octet-stream')
-            }
-            response = session.post(
-                'https://connect.garmin.com/upload-service/upload',
-                files=files,
-                headers={'Accept': 'application/json, text/plain, */*'}
-            )
+            upload_response = garth.client.upload(fit_file)
 
-        if response.status_code not in (200, 202):
-            raise ValueError(f'Garmin upload failed: {response.status_code} {response.text}')
+        if not upload_response:
+            raise ValueError('Garmin upload failed: empty response from server')
 
-        try:
-            return response.json()
-        except ValueError:
-            return response.text
+        # Check for failures in response if present
+        failures = None
+        if isinstance(upload_response, dict):
+            detailed = upload_response.get('detailedImportResult') or {}
+            failures = detailed.get('failures')
+
+        if failures:
+            raise ValueError(f'Garmin upload failed: {failures}')
+
+        return upload_response
     finally:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
