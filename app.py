@@ -197,56 +197,41 @@ def get_garmin_session():
     return None
 
 
-def upload_fit_to_garmin(fit_bytes: bytes) -> dict[str, str] | str:
-    """Upload FIT bytes to Garmin Connect using the authenticated requests session."""
+def upload_fit_to_garmin(fit_bytes: bytes):
+    """Upload FIT bytes to Garmin Connect using the authenticated session."""
     import sys
-    import requests
     
     print(f'[DEBUG] Attempting upload, size: {len(fit_bytes)} bytes', file=sys.stderr)
     
     try:
-        # Get the underlying requests session from garth
-        # garth.connectapi uses this internally, so it has the right auth
-        session = getattr(garth.client, '_session', None)
-        if session is None:
-            # Try alternative ways to get the session
-            for attr in ('session', '_session', '__session'):
-                session = getattr(garth.client, attr, None)
-                if session is not None:
-                    break
+        # Try to get the authenticated session from garth.client.sess
+        session = getattr(garth.client, 'sess', None)
         
-        if session is None:
-            # If we can't get the session, create a request using connectapi with different approach
-            print(f'[DEBUG] No session found, trying direct client approach', file=sys.stderr)
-            # Try using garth's internal request method
-            session = requests.Session()
-            # Copy auth headers from garth client if possible
-            if hasattr(garth.client, 'headers'):
-                session.headers.update(garth.client.headers)
+        if session:
+            print(f'[DEBUG] Got session from garth.client.sess', file=sys.stderr)
+            # Use the session directly
+            files = {'file': ('blood_pressure.fit', io.BytesIO(fit_bytes), 'application/octet-stream')}
+            url = 'https://connect.garmin.com/upload-service/upload'
+            print(f'[DEBUG] POSTing to {url}', file=sys.stderr)
+            response = session.post(url, files=files)
+        else:
+            # Fall back to garth.client.post() which handles authentication internally
+            print(f'[DEBUG] Session not available, using garth.client.post()', file=sys.stderr)
+            files = {'file': ('blood_pressure.fit', io.BytesIO(fit_bytes), 'application/octet-stream')}
+            url = '/upload-service/upload'  # Relative URL for garth to handle
+            response = garth.client.post(url, files=files)
         
-        print(f'[DEBUG] Using session type: {type(session)}', file=sys.stderr)
+        print(f'[DEBUG] Response status: {response.status_code if hasattr(response, "status_code") else "unknown"}', file=sys.stderr)
         
-        # Create multipart form data
-        files = {'file': ('blood_pressure_withings.fit', io.BytesIO(fit_bytes), 'application/octet-stream')}
+        if hasattr(response, 'status_code'):
+            print(f'[DEBUG] Response length: {len(response.text) if hasattr(response, "text") else "no text"}', file=sys.stderr)
+            if hasattr(response, 'text') and response.text:
+                print(f'[DEBUG] Response text: {response.text[:500]}', file=sys.stderr)
+            
+            if response.status_code not in (200, 201, 202, 204):
+                raise ValueError(f'Upload failed: {response.status_code} {response.text[:200] if hasattr(response, "text") else ""}')
         
-        # POST to upload endpoint
-        url = 'https://connect.garmin.com/upload-service/upload'
-        print(f'[DEBUG] POSTing to {url}', file=sys.stderr)
-        
-        response = session.post(url, files=files)
-        print(f'[DEBUG] Response status: {response.status_code}', file=sys.stderr)
-        print(f'[DEBUG] Response text: {response.text}', file=sys.stderr)
-        
-        if response.status_code not in (200, 201, 202, 204):
-            raise ValueError(f'Upload failed: {response.status_code} {response.text}')
-        
-        try:
-            result = response.json() if response.text else {'status': 'success'}
-            print(f'[DEBUG] Upload response: {result}', file=sys.stderr)
-            return result
-        except Exception as e:
-            print(f'[DEBUG] Could not parse JSON: {e}, treating as success', file=sys.stderr)
-            return {'status': 'success', 'message': 'File uploaded successfully'}
+        return {'status': 'success', 'message': 'File uploaded successfully'}
             
     except Exception as e:
         print(f'[DEBUG] Upload exception: {type(e).__name__}: {str(e)}', file=sys.stderr)
