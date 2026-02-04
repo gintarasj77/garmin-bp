@@ -1,14 +1,13 @@
 # Omron CSV to Garmin FIT
 
-Simple Flask web app to convert Omron CSV exports into a Garmin-importable FIT file with optional automatic upload to Garmin Connect.
+Simple Flask web app to convert Omron CSV exports into a Garmin-importable FIT file.
 
 ## Features
 
 - Convert Omron blood pressure CSV files to Garmin FIT format
-- **Auto-upload to Garmin Connect** - Connect your account once, credentials saved securely
-- **OAuth Token Storage** - No need to enter password every time
-- Download FIT file for manual import (leave credentials blank)
+- Download FIT file and import into Garmin Connect manually
 - No data storage - all processing happens in memory
+- Supports flexible date/time formats in CSV
 
 ## Local run
 
@@ -25,16 +24,22 @@ Simple Flask web app to convert Omron CSV exports into a Garmin-importable FIT f
 2. In Render, create a **Web Service** from the repo.
 3. Use:
    - Build command: `pip install -r requirements.txt`
-   - Start command: `python app.py --host 0.0.0.0 --port $PORT`
+   - Start command: `gunicorn app:app`
 
 The app uses a `Procfile` so Render can autodetect the start command.
 
 ## Usage
 
-1. Upload your Omron CSV file
-2. **First time:** Click "Save & Connect" with your Garmin credentials to save your login
-3. **After connecting:** Just upload CSV and click "Convert & Upload to Garmin"
-4. **Alternative:** Click "One-time Upload" to upload without saving credentials
-5. **Download only:** Click "Or Just Download FIT" to get the FIT file without uploading
+1. Export your blood pressure data from Omron as CSV
+2. Upload the CSV file to the app
+3. Click "Convert to FIT File" to generate the Garmin FIT file
+4. Open [Garmin Connect Import](https://connect.garmin.com/modern/import-data)
+5. Upload the downloaded FIT file
+6. Your blood pressure data will appear in Garmin Connect under **Health Stats > Blood Pressure**
 
-Your Garmin login tokens are stored securely and persist across sessions - no need to enter your password again!
+## CSV Format
+
+The app automatically detects common date/time column formats. Your CSV should include:
+- **Blood pressure readings**: `Systolic` and `Diastolic` columns (required)
+- **Date/Time**: Either a single `DateTime` column OR separate `Date` + `Time` columns
+- **Optional**: `Heart Rate` or `Pulse` column

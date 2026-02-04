@@ -186,55 +186,21 @@
 <body>
   <div class="card">
     <h1>CSV to Garmin FIT</h1>
-    <p>Upload your Omron CSV export and optionally auto-upload to Garmin Connect.</p>
+    <p>Convert your Omron CSV blood pressure data to Garmin FIT format.</p>
     
-    {% if garmin_connected %}
-    <div class="connected-status">
-      <span class="status-dot"></span>
-      <span>Connected to Garmin Connect</span>
+    <div class="note" style="background: #0ea5e9; padding: 12px; border-radius: 8px; margin-bottom: 20px;">
+      <strong>Note:</strong> Garmin's API does not support automatic blood pressure uploads. 
+      Download the FIT file and manually upload it at 
+      <a href="https://connect.garmin.com/modern/import-data" target="_blank" style="color: white; text-decoration: underline;">
+        Garmin Connect Import
+      </a>
     </div>
-    {% endif %}
     
     <form id="convert-form" action="/convert" method="post" enctype="multipart/form-data">
       <label for="csv_file">CSV file</label>
       <input id="csv_file" name="csv_file" type="file" accept=".csv" required />
       
-      <div class="garmin-section">
-        <div class="section-title">Garmin Connect Upload</div>
-        
-        {% if garmin_connected %}
-        <div class="helper-text">Using your saved Garmin connection</div>
-        <input type="hidden" name="use_saved_auth" value="true" />
-        <button type="submit">Convert & Upload to Garmin</button>
-        <button type="button" class="btn-secondary" onclick="showManualAuth()">Use Different Account</button>
-        <button type="button" class="btn-secondary" onclick="disconnectGarmin()">Disconnect Garmin</button>
-        
-        <div id="manual-auth" class="hidden" style="margin-top: 16px;">
-          <div class="helper-text">Enter different Garmin credentials</div>
-          <label for="garmin_email">Garmin Email</label>
-          <input id="garmin_email" name="garmin_email" type="email" placeholder="your@email.com" />
-          <label for="garmin_password">Garmin Password</label>
-          <input id="garmin_password" name="garmin_password" type="password" placeholder="Your password" />
-        </div>
-        
-        {% else %}
-        <div class="helper-text">Connect your account once, or leave blank to download FIT file</div>
-        
-        <div id="connect-section">
-          <label for="garmin_email">Garmin Email</label>
-          <input id="garmin_email" name="garmin_email" type="email" placeholder="your@email.com" />
-          <label for="garmin_password">Garmin Password</label>
-          <input id="garmin_password" name="garmin_password" type="password" placeholder="Your password" />
-          
-          <div class="auth-toggle">
-            <button type="button" onclick="connectGarmin()">Save & Connect</button>
-            <button type="submit" class="btn-secondary">One-time Upload</button>
-          </div>
-        </div>
-        
-        <button type="submit" style="margin-top: 12px;">Or Just Download FIT</button>
-        {% endif %}
-      </div>
+      <button type="submit">Convert to FIT File</button>
     </form>
     
     {% if success %}
@@ -247,88 +213,18 @@
     {% else %}
       <div class="error" id="error-box" style="display: none;"></div>
     {% endif %}
-    <div class="note">Your data and credentials are processed securely. Login tokens are saved locally for convenience.</div>
+    
+    <div class="note">After downloading, manually upload the FIT file to Garmin Connect at 
+      <a href="https://connect.garmin.com/modern/import-data" target="_blank" style="color: #38bdf8;">
+        connect.garmin.com/modern/import-data
+      </a>
+    </div>
   </div>
 
   <script>
     const form = document.getElementById('convert-form');
     const errorBox = document.getElementById('error-box');
     const successBox = document.getElementById('success-box');
-
-    function showManualAuth() {
-      document.getElementById('manual-auth').classList.remove('hidden');
-      document.querySelector('input[name="use_saved_auth"]').value = 'false';
-    }
-
-    async function connectGarmin() {
-      const email = document.getElementById('garmin_email').value;
-      const password = document.getElementById('garmin_password').value;
-      
-      console.log('Connect Garmin called', { email, password });
-      
-      if (!email || !password) {
-        errorBox.textContent = 'Please enter email and password';
-        errorBox.style.display = 'block';
-        return;
-      }
-
-      errorBox.style.display = 'none';
-      successBox.style.display = 'none';
-
-      try {
-        const formData = new FormData();
-        formData.append('garmin_email', email);
-        formData.append('garmin_password', password);
-
-        console.log('Sending request to /garmin/connect');
-        const response = await fetch('/garmin/connect', {
-          method: 'POST',
-          body: formData,
-          headers: { 'Accept': 'application/json' }
-        });
-
-        console.log('Response status:', response.status);
-        const data = await response.json();
-        console.log('Response data:', data);
-        
-        if (response.ok && data.success) {
-          successBox.textContent = data.message;
-          successBox.style.display = 'block';
-          setTimeout(() => location.reload(), 1500);
-        } else {
-          errorBox.textContent = data.error || 'Connection failed: ' + (data.message || 'Unknown error');
-          errorBox.style.display = 'block';
-          console.error('Connection failed:', data);
-        }
-      } catch (err) {
-        console.error('Exception:', err);
-        errorBox.textContent = 'Connection failed: ' + err.message;
-        errorBox.style.display = 'block';
-      }
-    }
-
-    async function disconnectGarmin() {
-      if (!confirm('Disconnect from Garmin Connect?')) return;
-
-      try {
-        const response = await fetch('/garmin/disconnect', {
-          method: 'POST',
-          headers: { 'Accept': 'application/json' }
-        });
-
-        const data = await response.json();
-        
-        if (response.ok && data.success) {
-          location.reload();
-        } else {
-          errorBox.textContent = data.error || 'Disconnect failed';
-          errorBox.style.display = 'block';
-        }
-      } catch (err) {
-        errorBox.textContent = 'Disconnect failed. Please try again.';
-        errorBox.style.display = 'block';
-      }
-    }
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -338,19 +234,13 @@
       successBox.textContent = '';
 
       const formData = new FormData(form);
-      const hasGarminCreds = formData.get('garmin_email') && formData.get('garmin_password');
-      const useSavedAuth = formData.get('use_saved_auth') === 'true';
-
-      console.log('Form submitted', { hasGarminCreds, csvFile: formData.get('csv_file')?.name });
 
       try {
         const response = await fetch('/convert', {
           method: 'POST',
           body: formData,
-          headers: { 'Accept': (hasGarminCreds || useSavedAuth) ? 'application/json' : 'application/octet-stream' }
+          headers: { 'Accept': 'application/octet-stream' }
         });
-
-        console.log('Convert response status:', response.status);
 
         if (!response.ok) {
           let message = 'Conversion failed.';
@@ -364,30 +254,16 @@
           }
           errorBox.textContent = message;
           errorBox.style.display = 'block';
-          console.error('Error:', message);
           return;
         }
 
-        // If Garmin upload was requested
-        if (hasGarminCreds || useSavedAuth) {
-          const data = await response.json();
-          console.log('Upload response:', data);
-          if (data.success) {
-            successBox.textContent = data.message;
-            successBox.style.display = 'block';
-            form.reset();
-          } else {
-            errorBox.textContent = data.error || 'Upload failed';
-            errorBox.style.display = 'block';
-          }
-        } else {
-          // Download FIT file
-          const blob = await response.blob();
-          const url = URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = url;
-          link.download = 'blood_pressure_withings.fit';
-          document.body.appendChild(link);
+        // Download FIT file
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'blood_pressure_withings.fit';
+        document.body.appendChild(link);
           link.click();
           link.remove();
           URL.revokeObjectURL(url);
