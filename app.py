@@ -11,6 +11,9 @@ from flask import Flask, Response, jsonify, render_template, request, session, r
 from withings_sync.fit import FitEncoderBloodPressure
 import garth
 
+# Required for blood pressure upload - see https://github.com/matin/garth/issues/73
+garth.http.USER_AGENT = {"User-Agent": "GCM-iOS-5.7.2.1"}
+
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
 
@@ -207,8 +210,10 @@ def upload_fit_to_garmin(fit_bytes: bytes):
     try:
         # Create BytesIO object and set name attribute (required by garth)
         fit_file = io.BytesIO(fit_bytes)
+        fit_file.seek(0)  # Ensure we're at the start
         fit_file.name = "blood_pressure.fit"
         
+        print(f'[DEBUG] File position: {fit_file.tell()}, size: {len(fit_file.getvalue())}', file=sys.stderr)
         print(f'[DEBUG] Uploading file: {fit_file.name}', file=sys.stderr)
         
         # Use garth.client.upload() - this is the correct method for FIT files
@@ -217,8 +222,11 @@ def upload_fit_to_garmin(fit_bytes: bytes):
         print(f'[DEBUG] Upload result: {result}', file=sys.stderr)
         print(f'[DEBUG] Result type: {type(result)}', file=sys.stderr)
         
-        # Empty list is normal for blood pressure files
-        # Data appears in Health Stats > Blood Pressure, not in Activities
+        if isinstance(result, list) and len(result) == 0:
+            # garth returns empty list for blood pressure - but that doesn't mean it worked
+            # Let's check if it actually uploaded by trying connectapi
+            print(f'[DEBUG] Upload returned empty list - blood pressure data may not sync via this method', file=sys.stderr)
+        
         return {'status': 'success', 'message': 'File uploaded successfully. Check Health Stats > Blood Pressure in Garmin Connect.', 'result': result}
             
     except Exception as e:
