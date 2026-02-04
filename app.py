@@ -217,7 +217,12 @@ def convert():
     if auto_upload:
         try:
             garth.login(garmin_email, garmin_password)
-            garth.client.upload(fit_bytes)
+            
+            # Create a file-like object from bytes
+            fit_file = io.BytesIO(fit_bytes)
+            fit_file.name = 'blood_pressure_withings.fit'
+            
+            garth.client.upload(fit_file)
             
             if wants_json():
                 return jsonify({
