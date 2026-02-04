@@ -198,40 +198,24 @@ def get_garmin_session():
 
 
 def upload_fit_to_garmin(fit_bytes: bytes):
-    """Upload FIT bytes to Garmin Connect using the authenticated session."""
+    """Upload FIT bytes to Garmin Connect using garth.client.upload()."""
     import sys
     
     print(f'[DEBUG] Attempting upload, size: {len(fit_bytes)} bytes', file=sys.stderr)
     
     try:
-        # Try to get the authenticated session from garth.client.sess
-        session = getattr(garth.client, 'sess', None)
+        # Create BytesIO object and set name attribute (required by garth)
+        fit_file = io.BytesIO(fit_bytes)
+        fit_file.name = "blood_pressure.fit"
         
-        if session:
-            print(f'[DEBUG] Got session from garth.client.sess', file=sys.stderr)
-            # Use the session directly
-            files = {'file': ('blood_pressure.fit', io.BytesIO(fit_bytes), 'application/octet-stream')}
-            url = 'https://connect.garmin.com/upload-service/upload'
-            print(f'[DEBUG] POSTing to {url}', file=sys.stderr)
-            response = session.post(url, files=files)
-        else:
-            # Fall back to garth.client.post() which handles authentication internally
-            print(f'[DEBUG] Session not available, using garth.client.post()', file=sys.stderr)
-            files = {'file': ('blood_pressure.fit', io.BytesIO(fit_bytes), 'application/octet-stream')}
-            url = '/upload-service/upload'  # Relative URL for garth to handle
-            response = garth.client.post(url, files=files)
+        print(f'[DEBUG] Uploading file: {fit_file.name}', file=sys.stderr)
         
-        print(f'[DEBUG] Response status: {response.status_code if hasattr(response, "status_code") else "unknown"}', file=sys.stderr)
+        # Use garth.client.upload() - this is the correct method for FIT files
+        result = garth.client.upload(fit_file)
         
-        if hasattr(response, 'status_code'):
-            print(f'[DEBUG] Response length: {len(response.text) if hasattr(response, "text") else "no text"}', file=sys.stderr)
-            if hasattr(response, 'text') and response.text:
-                print(f'[DEBUG] Response text: {response.text[:500]}', file=sys.stderr)
-            
-            if response.status_code not in (200, 201, 202, 204):
-                raise ValueError(f'Upload failed: {response.status_code} {response.text[:200] if hasattr(response, "text") else ""}')
+        print(f'[DEBUG] Upload result: {result}', file=sys.stderr)
         
-        return {'status': 'success', 'message': 'File uploaded successfully'}
+        return {'status': 'success', 'message': 'File uploaded successfully', 'result': result}
             
     except Exception as e:
         print(f'[DEBUG] Upload exception: {type(e).__name__}: {str(e)}', file=sys.stderr)
