@@ -155,8 +155,22 @@
       
       <button type="submit">Convert & Upload</button>
     </form>
+    {% if success %}
+      <div class="success" id="success-box">{{ success }}</div>
+    {% else %}
+      <div class="success" id="success-box" style="display: none;"></div>
+    {% endif %}
+    {% if error %}
+      <div class="error" id="error-box">{{ error }}</div>
+    {% else %}
+      <div class="error" id="error-box" style="display: none;"></div>
+    {% endif %}
+    <div class="note">We never store your data. Credentials are used only for upload and not saved.</div>
+  </div>
+  <script>
+    const form = document.getElementById('convert-form');
+    const errorBox = document.getElementById('error-box');
     const successBox = document.getElementById('success-box');
-    const emailInput = document.getElementById('garmin_email');
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -211,22 +225,7 @@
           URL.revokeObjectURL(url);
         }
       } catch (err) {
-        errorBox.textContent = 'Request failed. Please try again
-          errorBox.style.display = 'block';
-          return;
-        }
-
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = 'blood_pressure_withings.fit';
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        URL.revokeObjectURL(url);
-      } catch (err) {
-        errorBox.textContent = 'Download failed. Try again or use a regular browser.';
+        errorBox.textContent = 'Request failed. Please try again.';
         errorBox.style.display = 'block';
       }
     });
