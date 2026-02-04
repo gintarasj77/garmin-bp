@@ -187,32 +187,14 @@
   <div class="card">
     <h1>CSV to Garmin FIT</h1>
     <p>Convert your Omron CSV blood pressure data to Garmin FIT format.</p>
-    
-    <div class="note" style="background: #0ea5e9; padding: 12px; border-radius: 8px; margin-bottom: 20px;">
-      <strong>Note:</strong> Garmin's API does not support automatic blood pressure uploads. 
-      Download the FIT file and manually upload it at 
-      <a href="https://connect.garmin.com/modern/import-data" target="_blank" style="color: white; text-decoration: underline;">
-        Garmin Connect Import
-      </a>
-    </div>
-    
     <form id="convert-form" action="/convert" method="post" enctype="multipart/form-data">
       <label for="csv_file">CSV file</label>
       <input id="csv_file" name="csv_file" type="file" accept=".csv" required />
-      
       <button type="submit">Convert to FIT File</button>
     </form>
     
-    {% if success %}
-      <div class="success" id="success-box">{{ success }}</div>
-    {% else %}
-      <div class="success" id="success-box" style="display: none;"></div>
-    {% endif %}
-    {% if error %}
-      <div class="error" id="error-box">{{ error }}</div>
-    {% else %}
-      <div class="error" id="error-box" style="display: none;"></div>
-    {% endif %}
+    <div class="success" id="success-box" style="display: none;"></div>
+    <div class="error" id="error-box" style="display: none;"></div>
     
     <div class="note">After downloading, manually upload the FIT file to Garmin Connect at 
       <a href="https://connect.garmin.com/modern/import-data" target="_blank" style="color: #38bdf8;">
@@ -264,14 +246,12 @@
         link.href = url;
         link.download = 'blood_pressure_withings.fit';
         document.body.appendChild(link);
-          link.click();
-          link.remove();
-          URL.revokeObjectURL(url);
-        }
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
       } catch (err) {
         console.error('Exception:', err);
         errorBox.textContent = 'Request failed: ' + err.message;
-
         errorBox.style.display = 'block';
       }
     });

@@ -180,19 +180,6 @@ def index():
     return render_template('index.html')
 
 
-@app.route('/manifest.json', methods=['GET'])
-def manifest():
-    return jsonify({
-        "name": "CSV to Garmin FIT",
-        "short_name": "Garmin FIT",
-        "start_url": "/",
-        "display": "standalone",
-        "background_color": "#0f172a",
-        "theme_color": "#0f172a",
-        "icons": []
-    })
-
-
 @app.route('/convert', methods=['POST'])
 def convert():
     file = request.files.get('csv_file')
