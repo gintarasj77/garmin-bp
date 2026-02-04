@@ -199,15 +199,21 @@ def get_garmin_session():
 
 def upload_fit_to_garmin(fit_bytes: bytes) -> dict[str, str] | str:
     """Upload FIT bytes to Garmin Connect using garth client upload."""
+    import sys
     with tempfile.NamedTemporaryFile(mode='wb', suffix='.fit', delete=False) as tmp:
         tmp.write(fit_bytes)
         tmp_path = tmp.name
 
     try:
+        print(f'[DEBUG] Temp file created: {tmp_path}, size: {len(fit_bytes)} bytes', file=sys.stderr)
+        
         with open(tmp_path, 'rb') as fit_file:
+            print(f'[DEBUG] File opened, uploading...', file=sys.stderr)
             upload_response = garth.client.upload(fit_file)
+            print(f'[DEBUG] Upload response: {upload_response}', file=sys.stderr)
 
         if not upload_response:
+            print(f'[DEBUG] Empty response from upload', file=sys.stderr)
             raise ValueError('Garmin upload failed: empty response from server')
 
         # Check for failures in response if present
@@ -219,10 +225,15 @@ def upload_fit_to_garmin(fit_bytes: bytes) -> dict[str, str] | str:
         if failures:
             raise ValueError(f'Garmin upload failed: {failures}')
 
+        print(f'[DEBUG] Upload successful', file=sys.stderr)
         return upload_response
+    except Exception as e:
+        print(f'[DEBUG] Upload exception: {type(e).__name__}: {str(e)}', file=sys.stderr)
+        raise
     finally:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
+            print(f'[DEBUG] Temp file cleaned up', file=sys.stderr)
 
 
 def wants_json() -> bool:
