@@ -180,6 +180,23 @@ def build_fit(readings: list[dict[str, int | datetime]]) -> bytes:
     return fit_bp.getvalue()
 
 
+def get_garmin_session():
+    """Return a requests-like session from garth client."""
+    for attr in ('session', '_session'):
+        session = getattr(garth.client, attr, None)
+        if session is not None:
+            return session
+    for attr in ('_client', 'client'):
+        inner = getattr(garth.client, attr, None)
+        if inner is None:
+            continue
+        for inner_attr in ('session', '_session'):
+            session = getattr(inner, inner_attr, None)
+            if session is not None:
+                return session
+    return None
+
+
 def upload_fit_to_garmin(fit_bytes: bytes) -> dict[str, str] | str:
     """Upload FIT bytes to Garmin Connect using the upload-service endpoint."""
     with tempfile.NamedTemporaryFile(mode='wb', suffix='.fit', delete=False) as tmp:
@@ -187,7 +204,9 @@ def upload_fit_to_garmin(fit_bytes: bytes) -> dict[str, str] | str:
         tmp_path = tmp.name
 
     try:
-        session = garth.client.session
+        session = get_garmin_session()
+        if session is None:
+            raise ValueError('Garmin session not available. Please re-connect your Garmin account.')
         with open(tmp_path, 'rb') as fit_file:
             files = {
                 'file': ('blood_pressure_withings.fit', fit_file, 'application/octet-stream')
@@ -243,6 +262,19 @@ def is_garmin_connected():
 def index():
     connected = is_garmin_connected()
     return render_template('index.html', garmin_connected=connected)
+
+
+@app.route('/manifest.json', methods=['GET'])
+def manifest():
+    return jsonify({
+        "name": "CSV to Garmin FIT",
+        "short_name": "Garmin FIT",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#0f172a",
+        "theme_color": "#0f172a",
+        "icons": []
+    })
 
 
 @app.route('/convert', methods=['POST'])
