@@ -321,7 +321,7 @@ def convert():
 
 @app.route('/garmin/connect', methods=['POST'])
 def garmin_connect():
-    \"\"\"Connect Garmin account and save tokens\"\"\"
+    """Connect Garmin account and save tokens"""
     email = request.form.get('garmin_email', '').strip()
     password = request.form.get('garmin_password', '').strip()
     
@@ -350,7 +350,7 @@ def garmin_connect():
 
 @app.route('/garmin/disconnect', methods=['POST'])
 def garmin_disconnect():
-    \"\"\"Disconnect Garmin account and remove tokens\"\"\"
+    """Disconnect Garmin account and remove tokens"""
     try:
         token_path = get_user_token_path()
         if token_path.exists():
