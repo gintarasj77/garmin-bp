@@ -5,7 +5,8 @@ Simple Flask web app to convert Omron CSV exports into a Garmin-importable FIT f
 ## Features
 
 - Convert Omron blood pressure CSV files to Garmin FIT format
-- **Auto-upload to Garmin Connect** - Enter your Garmin credentials to upload directly
+- **Auto-upload to Garmin Connect** - Connect your account once, credentials saved securely
+- **OAuth Token Storage** - No need to enter password every time
 - Download FIT file for manual import (leave credentials blank)
 - No data storage - all processing happens in memory
 
@@ -31,7 +32,9 @@ The app uses a `Procfile` so Render can autodetect the start command.
 ## Usage
 
 1. Upload your Omron CSV file
-2. **Optional:** Enter your Garmin Connect email and password to auto-upload
-3. Click "Convert & Upload"
-   - If credentials provided: Data uploads directly to Garmin Connect
-   - If blank: FIT file downloads for manual import
+2. **First time:** Click "Save & Connect" with your Garmin credentials to save your login
+3. **After connecting:** Just upload CSV and click "Convert & Upload to Garmin"
+4. **Alternative:** Click "One-time Upload" to upload without saving credentials
+5. **Download only:** Click "Or Just Download FIT" to get the FIT file without uploading
+
+Your Garmin login tokens are stored securely and persist across sessions - no need to enter your password again!

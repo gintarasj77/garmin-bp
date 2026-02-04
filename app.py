@@ -1,14 +1,22 @@
 import argparse
 import csv
 import io
+import os
 import re
+import tempfile
 from datetime import datetime
+from pathlib import Path
 
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, session, redirect, url_for
 from withings_sync.fit import FitEncoderBloodPressure
 import garth
 
 app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
+
+# Token storage directory
+TOKEN_DIR = Path('.garmin_tokens')
+TOKEN_DIR.mkdir(exist_ok=True)
 
 DATETIME_FORMATS = [
     '%Y-%m-%d %H:%M:%S',
@@ -182,9 +190,29 @@ def error_response(message: str, status: int = 400):
     return render_template('index.html', error=message), status
 
 
+def get_user_token_path():
+    """Get token path for current session user"""
+    user_id = session.get('user_id', 'default')
+    return TOKEN_DIR / f'{user_id}.json'
+
+
+def is_garmin_connected():
+    """Check if user has valid Garmin tokens"""
+    token_path = get_user_token_path()
+    if not token_path.exists():
+        return False
+    try:
+        garth.resume(str(token_path))
+        garth.client.username
+        return True
+    except Exception:
+        return False
+
+
 @app.route('/', methods=['GET'])
 def index():
-    return render_template('index.html')
+    connected = is_garmin_connected()
+    return render_template('index.html', garmin_connected=connected)
 
 
 @app.route('/convert', methods=['POST'])
@@ -213,27 +241,72 @@ def convert():
 
     fit_bytes = build_fit(readings)
     
-    # If Garmin credentials provided, upload to Garmin Connect
-    if auto_upload:
+    # Check if user wants to use saved Garmin connection or provide credentials
+    use_saved_auth = request.form.get('use_saved_auth') == 'true'
+    
+    if use_saved_auth:
+        # Use saved OAuth tokens
+        if not is_garmin_connected():
+            return error_response('Not connected to Garmin. Please connect your account first.')
+        
         try:
-            garth.login(garmin_email, garmin_password)
+            token_path = get_user_token_path()
+            garth.resume(str(token_path))
             
-            # Create a file-like object from bytes and seek to beginning
-            fit_file = io.BytesIO(fit_bytes)
-            fit_file.seek(0)
-            fit_file.name = 'blood_pressure_withings.fit'
+            # Save FIT file temporarily
+            with tempfile.NamedTemporaryFile(mode='wb', suffix='.fit', delete=False) as tmp:
+                tmp.write(fit_bytes)
+                tmp_path = tmp.name
             
-            # Upload to Garmin Connect
-            uploaded = garth.client.upload(fit_file)
+            try:
+                # Upload the actual file to Garmin Connect
+                with open(tmp_path, 'rb') as fit_file:
+                    uploaded = garth.client.upload(fit_file)
+            finally:
+                # Clean up temp file
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
             
             if wants_json():
                 return jsonify({
                     'success': True,
-                    'message': f'Successfully uploaded {len(readings)} blood pressure reading(s) to Garmin Connect!',
-                    'upload_response': uploaded
+                    'message': f'Successfully uploaded {len(readings)} blood pressure reading(s) to Garmin Connect!'
                 }), 200
             
-            return render_template('index.html', success=f'Successfully uploaded {len(readings)} blood pressure reading(s) to Garmin Connect!'), 200
+            return render_template('index.html', success=f'Successfully uploaded {len(readings)} blood pressure reading(s) to Garmin Connect!', garmin_connected=True), 200
+        except Exception as exc:
+            return error_response(f'Garmin upload failed: {str(exc)}')
+    
+    # If Garmin credentials provided, login and save tokens
+    elif auto_upload:
+        try:
+            garth.login(garmin_email, garmin_password)
+            
+            # Save tokens for future use
+            token_path = get_user_token_path()
+            garth.save(str(token_path))
+            
+            # Save FIT file temporarily
+            with tempfile.NamedTemporaryFile(mode='wb', suffix='.fit', delete=False) as tmp:
+                tmp.write(fit_bytes)
+                tmp_path = tmp.name
+            
+            try:
+                # Upload the actual file to Garmin Connect
+                with open(tmp_path, 'rb') as fit_file:
+                    uploaded = garth.client.upload(fit_file)
+            finally:
+                # Clean up temp file
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+            
+            if wants_json():
+                return jsonify({
+                    'success': True,
+                    'message': f'Successfully uploaded {len(readings)} blood pressure reading(s) to Garmin Connect! Your login has been saved.',
+                }), 200
+            
+            return render_template('index.html', success=f'Successfully uploaded {len(readings)} blood pressure reading(s) to Garmin Connect! Your login has been saved.', garmin_connected=True), 200
         except Exception as exc:
             return error_response(f'Garmin upload failed: {str(exc)}')
     
@@ -244,6 +317,52 @@ def convert():
     response.headers['Cache-Control'] = 'no-store'
     response.headers['X-Content-Type-Options'] = 'nosniff'
     return response
+
+
+@app.route('/garmin/connect', methods=['POST'])
+def garmin_connect():
+    \"\"\"Connect Garmin account and save tokens\"\"\"
+    email = request.form.get('garmin_email', '').strip()
+    password = request.form.get('garmin_password', '').strip()
+    
+    if not email or not password:
+        return error_response('Email and password are required.')
+    
+    try:
+        garth.login(email, password)
+        
+        # Generate a user ID from email hash for token storage
+        import hashlib
+        user_id = hashlib.sha256(email.encode()).hexdigest()[:16]
+        session['user_id'] = user_id
+        
+        # Save tokens
+        token_path = get_user_token_path()
+        garth.save(str(token_path))
+        
+        if wants_json():
+            return jsonify({'success': True, 'message': 'Connected to Garmin successfully!'}), 200
+        
+        return render_template('index.html', success='Connected to Garmin successfully!', garmin_connected=True), 200
+    except Exception as exc:
+        return error_response(f'Garmin connection failed: {str(exc)}')
+
+
+@app.route('/garmin/disconnect', methods=['POST'])
+def garmin_disconnect():
+    \"\"\"Disconnect Garmin account and remove tokens\"\"\"
+    try:
+        token_path = get_user_token_path()
+        if token_path.exists():
+            token_path.unlink()
+        session.pop('user_id', None)
+        
+        if wants_json():
+            return jsonify({'success': True, 'message': 'Disconnected from Garmin.'}), 200
+        
+        return render_template('index.html', success='Disconnected from Garmin.', garmin_connected=False), 200
+    except Exception as exc:
+        return error_response(f'Disconnect failed: {str(exc)}')
 
 
 if __name__ == '__main__':

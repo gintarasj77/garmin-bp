@@ -134,27 +134,176 @@
       font-size: 0.9rem;
       color: var(--muted);
     }
+
+    .connected-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px;
+      border-radius: 10px;
+      background: rgba(34, 197, 94, 0.12);
+      color: #22c55e;
+      font-size: 0.9rem;
+      margin-bottom: 16px;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #22c55e;
+    }
+
+    .btn-secondary {
+      background: #374151;
+      color: var(--text);
+      margin-top: 8px;
+    }
+
+    .btn-secondary:hover {
+      background: #4b5563;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    .auth-toggle {
+      display: flex;
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .auth-toggle button {
+      flex: 1;
+      margin-top: 0;
+      padding: 8px 12px;
+      font-size: 0.9rem;
+    }
   </style>
 </head>
 <body>
   <div class="card">
     <h1>CSV to Garmin FIT</h1>
     <p>Upload your Omron CSV export and optionally auto-upload to Garmin Connect.</p>
+    
+    {% if garmin_connected %}
+    <div class="connected-status">
+      <span class="status-dot"></span>
+      <span>Connected to Garmin Connect</span>
+    </div>
+    {% endif %}
+    
     <form id="convert-form" action="/convert" method="post" enctype="multipart/form-data">
       <label for="csv_file">CSV file</label>
       <input id="csv_file" name="csv_file" type="file" accept=".csv" required />
       
       <div class="garmin-section">
-        <div class="section-title">Auto-upload to Garmin Connect (optional)</div>
-        <div class="helper-text">Leave blank to download FIT file instead</div>
-        <label for="garmin_email">Garmin Email</label>
-        <input id="garmin_email" name="garmin_email" type="email" placeholder="your@email.com" />
-        <label for="garmin_password">Garmin Password</label>
-        <input id="garmin_password" name="garmin_password" type="password" placeholder="Your password" />
-      </div>
+        <div class="section-title">Garmin Connect Upload</div>
+        
+        {% if garmin_connected %}
+        <div class="helper-text">Using your saved Garmin connection</div>
+        <input type="hidden" name="use_saved_auth" value="true" />
+        <button type="submit">Convert & Upload to Garmin</button>
+        <button type="button" class="btn-secondary" onclick="showManualAuth()">Use Different Account</button>
+        <button type="button" class="btn-secondary" onclick="disconnectGarmin()">Disconnect Garmin</button>
+        
+        <div id="manual-auth" class="hidden" style="margin-top: 16px;">
+          <div class="helper-text">Enter different Garmin credentials</div>
+          <label for="garmin_email">Garmin Email</label>
+          <input id="garmin_email" name="garmin_email" type="email" placeholder="your@email.com" />
+          <label for="garmin_password">Garmin Password</label>
+          <input id="garmin_password" name="garmin_password" type="password" placeholder="Your password" />
+        </div>
+        
+        {% else %}
+        <div class="helper-text">Connect your account once, or leave blank to download FIT file</div>
+     unction showManualAuth() {
+      document.getElementById('manual-auth').classList.remove('hidden');
+      document.querySelector('input[name="use_saved_auth"]').value = 'false';
+    }
+
+    async function connectGarmin() {
+      const email = document.getElementById('garmin_email').value;
+      const password = document.getElementById('garmin_password').value;
       
-      <button type="submit">Convert & Upload</button>
+      if (!email || !password) {
+        errorBox.textContent = 'Please enter email and password';
+        errorBox.style.display = 'block';
+        return;
+      }
+
+      errorBox.style.display = 'none';
+      successBox.style.display = 'none';
+
+      try {
+        const formData = new FormData();
+        formData.append('garmin_email', email);
+        formData.append('garmin_password', password);
+
+        const response = await fetch('/garmin/connect', {
+          method: 'POST',
+          body: formData,
+          headers: { 'Accept': 'application/json' }
+        });
+
+        const data = await response.json();
+        
+        if (response.ok && data.success) {
+          successBox.textContent = data.message;
+          successBox.style.display = 'block';
+          setTimeout(() => location.reload(), 1500);
+        } else {
+          errorBox.textContent = data.error || 'Connection failed';
+          errorBox.style.display = 'block';
+        }
+      } catch (err) {
+        errorBox.textContent = 'Connection failed. Please try again.';
+        errorBox.style.display = 'block';
+      }
+    }
+
+    async function disconnectGarmin() {
+      if (!confirm('Disconnect from Garmin Connect?')) return;
+
+      try {
+        const response = await fetch('/garmin/disconnect', {
+          method: 'POST',
+          headers: { 'Accept': 'application/json' }
+        });
+
+        const data = await response.json();
+        
+        if (response.ok && data.success) {
+          location.reload();
+        } else {
+          errorBox.textContent = data.error || 'Disconnect failed';
+          errorBox.style.display = 'block';
+        }
+      } catch (err) {
+        errorBox.textContent = 'Disconnect failed. Please try again.';
+        errorBox.style.display = 'block';
+      }
+    }
+
+    f   
+        <div id="connect-section">
+          <label for="garmin_email">Garmin Email</label>
+          <input id="garmin_email" name="garmin_email" type="email" placeholder="your@email.com" />
+          <label for="garmin_password">Garmin Password</label>
+          <input id="garmin_password" name="garmin_password" type="password" placeholder="Your password" />
+          
+          <div class="auth-toggle">
+            <button type="button" onclick="connectGarmin()">Save & Connect</button>
+            <button type="submit" class="btn-secondary">One-time Upload</button>
+          </div>
+        </div>
+        
+        <button type="submit" style="margin-top: 12px;">Or Just Download FIT</button>
+        {% endif %}
+      </div>
     </form>
+    
     {% if success %}
       <div class="success" id="success-box">{{ success }}</div>
     {% else %}
@@ -165,7 +314,7 @@
     {% else %}
       <div class="error" id="error-box" style="display: none;"></div>
     {% endif %}
-    <div class="note">We never store your data. Credentials are used only for upload and not saved.</div>
+    <div class="note">Your data and credentials are processed securely. Login tokens are saved locally for convenience.</div>
   </div>
   <script>
     const form = document.getElementById('convert-form');
