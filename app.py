@@ -218,16 +218,19 @@ def convert():
         try:
             garth.login(garmin_email, garmin_password)
             
-            # Create a file-like object from bytes
+            # Create a file-like object from bytes and seek to beginning
             fit_file = io.BytesIO(fit_bytes)
+            fit_file.seek(0)
             fit_file.name = 'blood_pressure_withings.fit'
             
-            garth.client.upload(fit_file)
+            # Upload to Garmin Connect
+            uploaded = garth.client.upload(fit_file)
             
             if wants_json():
                 return jsonify({
                     'success': True,
-                    'message': f'Successfully uploaded {len(readings)} blood pressure reading(s) to Garmin Connect!'
+                    'message': f'Successfully uploaded {len(readings)} blood pressure reading(s) to Garmin Connect!',
+                    'upload_response': uploaded
                 }), 200
             
             return render_template('index.html', success=f'Successfully uploaded {len(readings)} blood pressure reading(s) to Garmin Connect!'), 200
