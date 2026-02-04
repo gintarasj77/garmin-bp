@@ -202,6 +202,7 @@ def upload_fit_to_garmin(fit_bytes: bytes):
     import sys
     
     print(f'[DEBUG] Attempting upload, size: {len(fit_bytes)} bytes', file=sys.stderr)
+    print(f'[DEBUG] First 50 bytes (hex): {fit_bytes[:50].hex()}', file=sys.stderr)
     
     try:
         # Create BytesIO object and set name attribute (required by garth)
@@ -214,8 +215,11 @@ def upload_fit_to_garmin(fit_bytes: bytes):
         result = garth.client.upload(fit_file)
         
         print(f'[DEBUG] Upload result: {result}', file=sys.stderr)
+        print(f'[DEBUG] Result type: {type(result)}', file=sys.stderr)
         
-        return {'status': 'success', 'message': 'File uploaded successfully', 'result': result}
+        # Empty list is normal for blood pressure files
+        # Data appears in Health Stats > Blood Pressure, not in Activities
+        return {'status': 'success', 'message': 'File uploaded successfully. Check Health Stats > Blood Pressure in Garmin Connect.', 'result': result}
             
     except Exception as e:
         print(f'[DEBUG] Upload exception: {type(e).__name__}: {str(e)}', file=sys.stderr)
