@@ -339,6 +339,7 @@
 
       const formData = new FormData(form);
       const hasGarminCreds = formData.get('garmin_email') && formData.get('garmin_password');
+      const useSavedAuth = formData.get('use_saved_auth') === 'true';
 
       console.log('Form submitted', { hasGarminCreds, csvFile: formData.get('csv_file')?.name });
 
@@ -346,7 +347,7 @@
         const response = await fetch('/convert', {
           method: 'POST',
           body: formData,
-          headers: { 'Accept': hasGarminCreds ? 'application/json' : 'application/octet-stream' }
+          headers: { 'Accept': (hasGarminCreds || useSavedAuth) ? 'application/json' : 'application/octet-stream' }
         });
 
         console.log('Convert response status:', response.status);
@@ -368,7 +369,7 @@
         }
 
         // If Garmin upload was requested
-        if (hasGarminCreds) {
+        if (hasGarminCreds || useSavedAuth) {
           const data = await response.json();
           console.log('Upload response:', data);
           if (data.success) {

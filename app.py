@@ -180,6 +180,36 @@ def build_fit(readings: list[dict[str, int | datetime]]) -> bytes:
     return fit_bp.getvalue()
 
 
+def upload_fit_to_garmin(fit_bytes: bytes) -> dict[str, str] | str:
+    """Upload FIT bytes to Garmin Connect using the upload-service endpoint."""
+    with tempfile.NamedTemporaryFile(mode='wb', suffix='.fit', delete=False) as tmp:
+        tmp.write(fit_bytes)
+        tmp_path = tmp.name
+
+    try:
+        session = getattr(garth.client, 'session', garth.client)
+        with open(tmp_path, 'rb') as fit_file:
+            files = {
+                'file': ('blood_pressure_withings.fit', fit_file, 'application/octet-stream')
+            }
+            response = session.post(
+                'https://connect.garmin.com/upload-service/upload',
+                files=files,
+                headers={'Accept': 'application/json, text/plain, */*'}
+            )
+
+        if response.status_code not in (200, 202):
+            raise ValueError(f'Garmin upload failed: {response.status_code} {response.text}')
+
+        try:
+            return response.json()
+        except ValueError:
+            return response.text
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
 def wants_json() -> bool:
     return 'application/json' in request.headers.get('Accept', '').lower()
 
@@ -252,28 +282,21 @@ def convert():
         try:
             token_path = get_user_token_path()
             garth.resume(str(token_path))
-            
-            # Save FIT file temporarily
-            with tempfile.NamedTemporaryFile(mode='wb', suffix='.fit', delete=False) as tmp:
-                tmp.write(fit_bytes)
-                tmp_path = tmp.name
-            
-            try:
-                # Upload the actual file to Garmin Connect
-                with open(tmp_path, 'rb') as fit_file:
-                    uploaded = garth.client.upload(fit_file)
-            finally:
-                # Clean up temp file
-                if os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
-            
+
+            upload_response = upload_fit_to_garmin(fit_bytes)
+
             if wants_json():
                 return jsonify({
                     'success': True,
-                    'message': f'Successfully uploaded {len(readings)} blood pressure reading(s) to Garmin Connect!'
+                    'message': f'Successfully uploaded {len(readings)} blood pressure reading(s) to Garmin Connect!',
+                    'upload_response': upload_response,
                 }), 200
-            
-            return render_template('index.html', success=f'Successfully uploaded {len(readings)} blood pressure reading(s) to Garmin Connect!', garmin_connected=True), 200
+
+            return render_template(
+                'index.html',
+                success=f'Successfully uploaded {len(readings)} blood pressure reading(s) to Garmin Connect!',
+                garmin_connected=True,
+            ), 200
         except Exception as exc:
             return error_response(f'Garmin upload failed: {str(exc)}')
     
@@ -285,28 +308,21 @@ def convert():
             # Save tokens for future use
             token_path = get_user_token_path()
             garth.save(str(token_path))
-            
-            # Save FIT file temporarily
-            with tempfile.NamedTemporaryFile(mode='wb', suffix='.fit', delete=False) as tmp:
-                tmp.write(fit_bytes)
-                tmp_path = tmp.name
-            
-            try:
-                # Upload the actual file to Garmin Connect
-                with open(tmp_path, 'rb') as fit_file:
-                    uploaded = garth.client.upload(fit_file)
-            finally:
-                # Clean up temp file
-                if os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
-            
+
+            upload_response = upload_fit_to_garmin(fit_bytes)
+
             if wants_json():
                 return jsonify({
                     'success': True,
                     'message': f'Successfully uploaded {len(readings)} blood pressure reading(s) to Garmin Connect! Your login has been saved.',
+                    'upload_response': upload_response,
                 }), 200
-            
-            return render_template('index.html', success=f'Successfully uploaded {len(readings)} blood pressure reading(s) to Garmin Connect! Your login has been saved.', garmin_connected=True), 200
+
+            return render_template(
+                'index.html',
+                success=f'Successfully uploaded {len(readings)} blood pressure reading(s) to Garmin Connect! Your login has been saved.',
+                garmin_connected=True,
+            ), 200
         except Exception as exc:
             return error_response(f'Garmin upload failed: {str(exc)}')
     
