@@ -64,6 +64,35 @@
       border-radius: 10px;
     }
 
+    input[type="email"],
+    input[type="password"] {
+      width: 100%;
+      padding: 12px;
+      background: #0b1220;
+      border: 1px solid #1f2937;
+      color: var(--text);
+      border-radius: 10px;
+      margin-bottom: 12px;
+    }
+
+    .garmin-section {
+      margin-top: 24px;
+      padding-top: 24px;
+      border-top: 1px solid #1f2937;
+    }
+
+    .section-title {
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 12px;
+    }
+
+    .helper-text {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+
     button {
       margin-top: 20px;
       width: 100%;
@@ -91,6 +120,15 @@
       font-weight: 600;
     }
 
+    .success {
+      margin-top: 16px;
+      padding: 12px;
+      border-radius: 10px;
+      background: rgba(34, 197, 94, 0.12);
+      color: #22c55e;
+      font-weight: 600;
+    }
+
     .note {
       margin-top: 16px;
       font-size: 0.9rem;
@@ -101,35 +139,40 @@
 <body>
   <div class="card">
     <h1>CSV to Garmin FIT</h1>
-    <p>Upload your Omron CSV export and download a Garmin-compatible FIT file.</p>
+    <p>Upload your Omron CSV export and optionally auto-upload to Garmin Connect.</p>
     <form id="convert-form" action="/convert" method="post" enctype="multipart/form-data">
       <label for="csv_file">CSV file</label>
       <input id="csv_file" name="csv_file" type="file" accept=".csv" required />
-      <button type="submit" data-mode="fetch">Convert to FIT</button>
+      
+      <div class="garmin-section">
+        <div class="section-title">Auto-upload to Garmin Connect (optional)</div>
+        <div class="helper-text">Leave blank to download FIT file instead</div>
+        <label for="garmin_email">Garmin Email</label>
+        <input id="garmin_email" name="garmin_email" type="email" placeholder="your@email.com" />
+        <label for="garmin_password">Garmin Password</label>
+        <input id="garmin_password" name="garmin_password" type="password" placeholder="Your password" />
+      </div>
+      
+      <button type="submit">Convert & Upload</button>
     </form>
-    {% if error %}
-      <div class="error" id="error-box">{{ error }}</div>
-    {% else %}
-      <div class="error" id="error-box" style="display: none;"></div>
-    {% endif %}
-    <div class="note">We never store your data. The conversion happens in memory.</div>
-  </div>
-  <script>
-    const form = document.getElementById('convert-form');
-    const errorBox = document.getElementById('error-box');
+    const successBox = document.getElementById('success-box');
+    const emailInput = document.getElementById('garmin_email');
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       errorBox.style.display = 'none';
       errorBox.textContent = '';
+      successBox.style.display = 'none';
+      successBox.textContent = '';
 
       const formData = new FormData(form);
+      const hasGarminCreds = formData.get('garmin_email') && formData.get('garmin_password');
 
       try {
         const response = await fetch('/convert', {
           method: 'POST',
           body: formData,
-          headers: { 'Accept': 'application/json' }
+          headers: { 'Accept': hasGarminCreds ? 'application/json' : 'application/octet-stream' }
         });
 
         if (!response.ok) {
@@ -143,6 +186,32 @@
             // ignore
           }
           errorBox.textContent = message;
+          errorBox.style.display = 'block';
+          return;
+        }
+
+        // If Garmin upload was requested
+        if (hasGarminCreds) {
+          const data = await response.json();
+          if (data.success) {
+            successBox.textContent = data.message;
+            successBox.style.display = 'block';
+            form.reset();
+          }
+        } else {
+          // Download FIT file
+          const blob = await response.blob();
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = 'blood_pressure_withings.fit';
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          URL.revokeObjectURL(url);
+        }
+      } catch (err) {
+        errorBox.textContent = 'Request failed. Please try again
           errorBox.style.display = 'block';
           return;
         }

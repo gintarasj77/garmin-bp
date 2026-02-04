@@ -6,6 +6,7 @@ from datetime import datetime
 
 from flask import Flask, Response, jsonify, render_template, request
 from withings_sync.fit import FitEncoderBloodPressure
+import garth
 
 app = Flask(__name__)
 
@@ -192,6 +193,11 @@ def convert():
     if not file or file.filename == '':
         return error_response('Please select a CSV file.')
 
+    # Get Garmin credentials if provided
+    garmin_email = request.form.get('garmin_email', '').strip()
+    garmin_password = request.form.get('garmin_password', '').strip()
+    auto_upload = garmin_email and garmin_password
+
     try:
         text = file.read().decode('utf-8-sig')
     except UnicodeDecodeError:
@@ -206,6 +212,24 @@ def convert():
         return error_response('No valid readings found in the CSV.')
 
     fit_bytes = build_fit(readings)
+    
+    # If Garmin credentials provided, upload to Garmin Connect
+    if auto_upload:
+        try:
+            garth.login(garmin_email, garmin_password)
+            garth.client.upload(fit_bytes)
+            
+            if wants_json():
+                return jsonify({
+                    'success': True,
+                    'message': f'Successfully uploaded {len(readings)} blood pressure reading(s) to Garmin Connect!'
+                }), 200
+            
+            return render_template('index.html', success=f'Successfully uploaded {len(readings)} blood pressure reading(s) to Garmin Connect!'), 200
+        except Exception as exc:
+            return error_response(f'Garmin upload failed: {str(exc)}')
+    
+    # Otherwise, download the FIT file
     response = Response(fit_bytes, mimetype='application/octet-stream')
     response.headers['Content-Disposition'] = 'attachment; filename="blood_pressure_withings.fit"'
     response.headers['Content-Length'] = str(len(fit_bytes))
