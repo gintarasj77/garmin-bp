@@ -1,6 +1,5 @@
 import argparse
 import os
-import sys
 
 import pytz
 from datetime import datetime, timezone
@@ -9,12 +8,7 @@ from flask import Flask, jsonify, render_template, request
 from garminconnect import Garmin
 from waitress import serve
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-VENDOR_OMRAMIN = os.path.join(BASE_DIR, 'vendor', 'omramin')
-if VENDOR_OMRAMIN not in sys.path:
-    sys.path.insert(0, VENDOR_OMRAMIN)
-
-from omronconnect import BPMeasurement, DeviceCategory, OmronClient  # noqa: E402
+from omronconnect import BPMeasurement, DeviceCategory, OmronClient
 
 app = Flask(__name__)
 

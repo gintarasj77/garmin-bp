@@ -1,5 +1,4 @@
 Flask==3.0.2
-gunicorn==21.2.0
 garminconnect==0.2.25
 waitress==3.0.2
 httpx==0.28.1

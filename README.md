@@ -23,7 +23,7 @@ Simple Flask web app to sync OMRON Connect blood pressure readings directly to G
 2. In Render, create a **Web Service** from the repo.
 3. Use:
    - Build command: `pip install -r requirements.txt`
-   - Start command: `gunicorn app:app`
+   - Start command: `python app.py --host 0.0.0.0 --port $PORT`
 
 The app uses a `Procfile` so Render can autodetect the start command.
 
