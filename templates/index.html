@@ -130,6 +130,7 @@
       font-weight: 600;
     }
 
+
     .note {
       margin-top: 16px;
       font-size: 0.9rem;
@@ -185,28 +186,71 @@
 </head>
 <body>
   <div class="card">
-    <h1>CSV to Garmin FIT</h1>
-    <p>Convert your Omron CSV blood pressure data to Garmin FIT format.</p>
+    <h1>Omron to Garmin Sync</h1>
+    <div class="helper-text">Credentials are stored only in your browser (local storage) if you choose to save them.</div>
     <form id="convert-form" action="/convert" method="post" enctype="multipart/form-data">
-      <label for="csv_file">CSV file</label>
-      <input id="csv_file" name="csv_file" type="file" accept=".csv" required />
-      <button type="submit">Convert to FIT File</button>
+      <div class="garmin-section">
+        <div class="section-title">Garmin Connect (optional)</div>
+        <input id="garmin_email" name="garmin_email" type="email" placeholder="Garmin email" autocomplete="username" />
+        <input id="garmin_password" name="garmin_password" type="password" placeholder="Garmin password" autocomplete="current-password" />
+        <label style="display: flex; gap: 8px; align-items: center; font-weight: 500;">
+          <input type="checkbox" id="save_garmin" />
+          Remember Garmin credentials on this device
+        </label>
+      </div>
+
+      <div class="garmin-section">
+        <div class="section-title">OMRON Connect (optional)</div>
+        <input id="omron_email" name="omron_email" type="email" placeholder="OMRON email" autocomplete="username" />
+        <input id="omron_password" name="omron_password" type="password" placeholder="OMRON password" autocomplete="current-password" />
+        <input id="omron_country" name="omron_country" type="text" placeholder="Country code (e.g., LT)" maxlength="2" />
+        <label style="display: flex; gap: 8px; align-items: center; font-weight: 500;">
+          <input type="checkbox" id="save_omron" />
+          Remember OMRON credentials on this device
+        </label>
+      </div>
+
+      <button type="submit" class="btn-secondary" data-action="omron">Sync from OMRON to Garmin</button>
     </form>
     
     <div class="success" id="success-box" style="display: none;"></div>
     <div class="error" id="error-box" style="display: none;"></div>
-    
-    <div class="note">After downloading, manually upload the FIT file to Garmin Connect at 
-      <a href="https://connect.garmin.com/modern/import-data" target="_blank" style="color: #38bdf8;">
-        connect.garmin.com/modern/import-data
-      </a>
-    </div>
   </div>
 
   <script>
     const form = document.getElementById('convert-form');
     const errorBox = document.getElementById('error-box');
     const successBox = document.getElementById('success-box');
+    const garminEmail = document.getElementById('garmin_email');
+    const garminPassword = document.getElementById('garmin_password');
+    const saveGarmin = document.getElementById('save_garmin');
+    const omronEmail = document.getElementById('omron_email');
+    const omronPassword = document.getElementById('omron_password');
+    const omronCountry = document.getElementById('omron_country');
+    const saveOmron = document.getElementById('save_omron');
+
+    let pendingAction = 'omron';
+
+    form.querySelectorAll('button[data-action]').forEach((button) => {
+      button.addEventListener('click', () => {
+        pendingAction = button.dataset.action;
+      });
+    });
+
+    const storedGarmin = JSON.parse(localStorage.getItem('garminCreds') || 'null');
+    if (storedGarmin) {
+      garminEmail.value = storedGarmin.email || '';
+      garminPassword.value = storedGarmin.password || '';
+      saveGarmin.checked = true;
+    }
+
+    const storedOmron = JSON.parse(localStorage.getItem('omronCreds') || 'null');
+    if (storedOmron) {
+      omronEmail.value = storedOmron.email || '';
+      omronPassword.value = storedOmron.password || '';
+      omronCountry.value = storedOmron.country || '';
+      saveOmron.checked = true;
+    }
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -218,10 +262,30 @@
       const formData = new FormData(form);
 
       try {
-        const response = await fetch('/convert', {
+        if (saveGarmin.checked) {
+          localStorage.setItem('garminCreds', JSON.stringify({
+            email: garminEmail.value || '',
+            password: garminPassword.value || ''
+          }));
+        } else {
+          localStorage.removeItem('garminCreds');
+        }
+
+        if (saveOmron.checked) {
+          localStorage.setItem('omronCreds', JSON.stringify({
+            email: omronEmail.value || '',
+            password: omronPassword.value || '',
+            country: omronCountry.value || ''
+          }));
+        } else {
+          localStorage.removeItem('omronCreds');
+        }
+
+        const actionUrl = '/sync-omron';
+        const response = await fetch(actionUrl, {
           method: 'POST',
           body: formData,
-          headers: { 'Accept': 'application/octet-stream' }
+          headers: { 'Accept': 'application/json' }
         });
 
         if (!response.ok) {
@@ -239,22 +303,16 @@
           return;
         }
 
-        // Download FIT file
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = 'blood_pressure_withings.fit';
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        URL.revokeObjectURL(url);
+        const data = await response.json();
+        successBox.textContent = data.message || 'Sync complete.';
+        successBox.style.display = 'block';
       } catch (err) {
         console.error('Exception:', err);
         errorBox.textContent = 'Request failed: ' + err.message;
         errorBox.style.display = 'block';
       }
     });
+
   </script>
 </body>
 </html>

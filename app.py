@@ -1,178 +1,166 @@
 import argparse
-import csv
-import io
-import re
-from datetime import datetime
+import os
+import sys
 
-from flask import Flask, Response, render_template, request
-from withings_sync.fit import FitEncoderBloodPressure
+import pytz
+from datetime import datetime, timezone
+
+from flask import Flask, jsonify, render_template, request
+from garminconnect import Garmin
+from waitress import serve
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+VENDOR_OMRAMIN = os.path.join(BASE_DIR, 'vendor', 'omramin')
+if VENDOR_OMRAMIN not in sys.path:
+    sys.path.insert(0, VENDOR_OMRAMIN)
+
+from omronconnect import BPMeasurement, DeviceCategory, OmronClient  # noqa: E402
 
 app = Flask(__name__)
 
-DATETIME_FORMATS = [
-    '%Y-%m-%d %H:%M:%S',
-    '%Y-%m-%d %H:%M',
-    '%m/%d/%Y %H:%M:%S',
-    '%m/%d/%Y %H:%M',
-    '%d/%m/%Y %H:%M:%S',
-    '%d/%m/%Y %H:%M',
-    '%m/%d/%Y %I:%M:%S %p',
-    '%m/%d/%Y %I:%M %p',
-]
+def sync_to_garmin(
+    readings: list[dict[str, int | datetime]],
+    email: str,
+    password: str,
+    is_cn: bool,
+) -> int:
+    if not email or not password:
+        raise ValueError('Garmin credentials are required for each sync in client-only mode.')
 
-DATE_FORMATS = [
-    '%Y-%m-%d',
-    '%m/%d/%Y',
-    '%d/%m/%Y',
-    '%d %b %Y',
-]
+    gc = Garmin(email=email, password=password, is_cn=is_cn, prompt_mfa=None)
+    logged_in = gc.login()
 
-TIME_FORMATS = [
-    '%H:%M:%S',
-    '%H:%M',
-    '%I:%M:%S %p',
-    '%I:%M %p',
-]
+    if not logged_in:
+        raise ValueError('Garmin login failed. Please check your credentials.')
 
+    local_tz = datetime.now().astimezone().tzinfo
+    existing = get_existing_bp_timestamps(gc, readings, local_tz)
 
-def normalize_header(value: str) -> str:
-    return re.sub(r'[^a-z0-9]+', '', value.strip().lower())
-
-
-def build_header_map(headers: list[str]) -> dict[str, str | None]:
-    normalized = {normalize_header(h): h for h in headers}
-
-    def find(*candidates: str) -> str | None:
-        for candidate in candidates:
-            if candidate in normalized:
-                return normalized[candidate]
-        return None
-
-    return {
-        'datetime': find('datetime', 'datetimestamp', 'dateandtime', 'date_time', 'date time', 'measurementdatetime'),
-        'date': find('date', 'measurementdate'),
-        'time': find('time', 'measurementtime'),
-        'systolic': find('systolic', 'sys', 'systolicbloodpressure', 'bpsystolic', 'systolicmmhg'),
-        'diastolic': find('diastolic', 'dia', 'diastolicbloodpressure', 'bpdiastolic', 'diastolicmmhg'),
-        'heart_rate': find('heartrate', 'pulse', 'pulserate', 'hr', 'bppulse', 'pulsebpm'),
-    }
-
-
-def parse_datetime(value: str) -> datetime | None:
-    if not value:
-        return None
-    value = value.strip()
-    try:
-        return datetime.fromisoformat(value)
-    except ValueError:
-        pass
-    for fmt in DATETIME_FORMATS:
-        try:
-            return datetime.strptime(value, fmt)
-        except ValueError:
-            continue
-    return None
-
-
-def parse_date_time(date_value: str, time_value: str) -> datetime | None:
-    if not date_value or not time_value:
-        return None
-    date_value = date_value.strip()
-    time_value = time_value.strip()
-    for date_fmt in DATE_FORMATS:
-        for time_fmt in TIME_FORMATS:
-            try:
-                return datetime.strptime(f'{date_value} {time_value}', f'{date_fmt} {time_fmt}')
-            except ValueError:
-                continue
-    return None
-
-
-def parse_int(value: str | None) -> int | None:
-    if value is None:
-        return None
-    value = value.strip()
-    if value == '':
-        return None
-    try:
-        return int(float(value))
-    except ValueError:
-        return None
-
-
-def load_readings_from_text(text: str) -> list[dict[str, int | datetime]]:
-    reader = csv.DictReader(io.StringIO(text))
-    if not reader.fieldnames:
-        raise ValueError('CSV file has no headers.')
-
-    header_map = build_header_map(reader.fieldnames)
-    missing = [
-        key
-        for key in ('systolic', 'diastolic')
-        if header_map[key] is None
-    ]
-    if missing:
-        raise ValueError(f'Missing required columns: {", ".join(missing)}')
-
-    if header_map['datetime'] is None and (header_map['date'] is None or header_map['time'] is None):
-        raise ValueError('Missing date/time columns. Provide DateTime or Date + Time columns.')
-
-    readings: list[dict[str, int | datetime]] = []
-    for row in reader:
-        if header_map['datetime']:
-            dt = parse_datetime(row.get(header_map['datetime'], ''))
-        else:
-            dt = parse_date_time(
-                row.get(header_map['date'], ''),
-                row.get(header_map['time'], ''),
-            )
-        if not dt:
-            continue
-
-        systolic = parse_int(row.get(header_map['systolic']))
-        diastolic = parse_int(row.get(header_map['diastolic']))
-        if header_map['heart_rate'] is None:
-            heart_rate = None
-        else:
-            heart_rate = parse_int(row.get(header_map['heart_rate']))
-        if systolic is None or diastolic is None:
-            continue
-
-        readings.append(
-            {
-                'timestamp': dt,
-                'systolic': systolic,
-                'diastolic': diastolic,
-                'hr': heart_rate if heart_rate is not None else 0,
-            }
-        )
-
-    return readings
-
-
-def build_fit(readings: list[dict[str, int | datetime]]) -> bytes:
-    fit_bp = FitEncoderBloodPressure()
-    fit_bp.write_file_info()
-    fit_bp.write_file_creator()
-
+    added = 0
     for r in readings:
         dt = r['timestamp']
         if not isinstance(dt, datetime):
             continue
-        fit_bp.write_device_info(timestamp=dt)
-        fit_bp.write_blood_pressure(
-            timestamp=dt,
-            diastolic_blood_pressure=r['diastolic'],
-            systolic_blood_pressure=r['systolic'],
-            heart_rate=r['hr'],
+        dt_local = dt.replace(tzinfo=local_tz) if dt.tzinfo is None else dt
+        dt_utc = dt_local.astimezone(timezone.utc)
+        lookup = int(dt_utc.timestamp())
+
+        if lookup in existing:
+            continue
+
+        gc.set_blood_pressure(
+            timestamp=dt_local.isoformat(timespec='seconds'),
+            systolic=r['systolic'],
+            diastolic=r['diastolic'],
+            pulse=r['hr'],
+            notes=None,
         )
+        added += 1
+    return added
 
-    fit_bp.finish()
-    return fit_bp.getvalue()
+
+def login_omron(
+    email: str,
+    password: str,
+    country: str,
+) -> tuple[OmronClient, str]:
+    if not country:
+        raise ValueError('OMRON country code is required.')
+
+    if not email or not password:
+        raise ValueError('OMRON credentials are required for each sync in client-only mode.')
+
+    oc = OmronClient(country)
+    refresh_token = None
+
+    refresh_token = oc.login(email, password)
+
+    if not refresh_token:
+        raise ValueError('OMRON login failed. Please check your credentials.')
+
+    return oc, refresh_token
 
 
-def error_response(message: str, status: int = 400):
-    return render_template('index.html', error=message), status
+def load_omron_measurements(
+    email: str,
+    password: str,
+    country: str,
+    days: int,
+) -> list[BPMeasurement]:
+    oc, _ = login_omron(email, password, country)
+
+    devices = oc.get_registered_devices(days=None) or []
+    bpm_devices = [dev for dev in devices if dev.category == DeviceCategory.BPM]
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    start_ms = int((datetime.now(timezone.utc).timestamp() - (days * 86400)) * 1000)
+
+    if bpm_devices:
+        device = bpm_devices[0]
+        measurements = oc.get_measurements(device, searchDateFrom=start_ms, searchDateTo=now_ms)
+        return [m for m in measurements if isinstance(m, BPMeasurement)]
+
+    # Fallback: try API v2 direct BP sync if device listing returns empty
+    active_client = getattr(oc, "_active_client", None)
+    if active_client and hasattr(active_client, "get_bp_measurements"):
+        raw = active_client.get_bp_measurements(lastSyncedTime=start_ms)
+        results: list[BPMeasurement] = []
+        for item in raw or []:
+            try:
+                results.append(
+                    BPMeasurement(
+                        systolic=int(item["systolic"]),
+                        diastolic=int(item["diastolic"]),
+                        pulse=int(item["pulse"]),
+                        measurementDate=int(item["measurementDate"]),
+                        timeZone=pytz.FixedOffset(int(item["timeZone"]) // 60),
+                        irregularHB=int(item.get("irregularHB", 0)) != 0,
+                        movementDetect=int(item.get("movementDetect", 0)) != 0,
+                        cuffWrapDetect=int(item.get("cuffWrapDetect", 0)) != 0,
+                        notes=item.get("notes", ""),
+                    )
+                )
+            except Exception:
+                continue
+        if results:
+            return results
+
+    raise ValueError('No OMRON blood pressure devices found on your account.')
+
+
+def get_existing_bp_timestamps(gc: Garmin, readings: list[dict[str, int | datetime]], local_tz) -> set[int]:
+    dates: list[datetime] = []
+    for r in readings:
+        dt = r['timestamp']
+        if isinstance(dt, datetime):
+            dates.append(dt)
+
+    if not dates:
+        return set()
+
+    min_dt = min(dates)
+    max_dt = max(dates)
+    min_local = min_dt.replace(tzinfo=local_tz) if min_dt.tzinfo is None else min_dt
+    max_local = max_dt.replace(tzinfo=local_tz) if max_dt.tzinfo is None else max_dt
+
+    startdate = min_local.date().isoformat()
+    enddate = max_local.date().isoformat()
+
+    gc_data = gc.get_blood_pressure(startdate=startdate, enddate=enddate)
+    summaries = gc_data.get('measurementSummaries', []) if isinstance(gc_data, dict) else []
+
+    existing: set[int] = set()
+    for summary in summaries:
+        for metric in summary.get('measurements', []):
+            timestamp_gmt = metric.get('measurementTimestampGMT')
+            if not timestamp_gmt:
+                continue
+            try:
+                dt_utc = datetime.fromisoformat(f"{timestamp_gmt}Z")
+            except ValueError:
+                continue
+            existing.add(int(dt_utc.timestamp()))
+
+    return existing
 
 
 @app.route('/', methods=['GET'])
@@ -180,38 +168,52 @@ def index():
     return render_template('index.html')
 
 
-@app.route('/convert', methods=['POST'])
-def convert():
-    file = request.files.get('csv_file')
-    if not file or file.filename == '':
-        return error_response('Please select a CSV file.')
+@app.route('/sync-omron', methods=['POST'])
+def sync_omron():
+    email = request.form.get('omron_email', '').strip()
+    password = request.form.get('omron_password', '')
+    country = request.form.get('omron_country', '').strip().upper()
+    days = 30
 
     try:
-        text = file.read().decode('utf-8-sig')
-    except UnicodeDecodeError:
-        return error_response('Unable to read file as UTF-8.')
-
-    try:
-        readings = load_readings_from_text(text)
+        measurements = load_omron_measurements(email, password, country, days)
     except ValueError as exc:
-        return error_response(str(exc))
+        return jsonify({'error': str(exc)}), 400
+    except Exception as exc:  # pylint: disable=broad-except
+        return jsonify({'error': f'OMRON sync failed: {exc}'}), 500
+
+    readings: list[dict[str, int | datetime]] = []
+    for bpm in measurements:
+        dt = datetime.fromtimestamp(bpm.measurementDate / 1000, tz=bpm.timeZone)
+        readings.append(
+            {
+                'timestamp': dt,
+                'systolic': bpm.systolic,
+                'diastolic': bpm.diastolic,
+                'hr': bpm.pulse,
+            }
+        )
 
     if not readings:
-        return error_response('No valid readings found in the CSV.')
+        return jsonify({'error': 'No OMRON readings found for the selected range.'}), 400
 
-    fit_bytes = build_fit(readings)
-    
-    # Download the FIT file
-    response = Response(fit_bytes, mimetype='application/octet-stream')
-    response.headers['Content-Disposition'] = 'attachment; filename="blood_pressure_withings.fit"'
-    response.headers['Content-Length'] = str(len(fit_bytes))
-    response.headers['Cache-Control'] = 'no-store'
-    response.headers['X-Content-Type-Options'] = 'nosniff'
-    return response
+    garmin_email = request.form.get('garmin_email', '').strip()
+    garmin_password = request.form.get('garmin_password', '')
+    if not (garmin_email and garmin_password):
+        return jsonify({'error': 'Garmin credentials required for sync.'}), 400
+
+    try:
+        added = sync_to_garmin(readings, garmin_email, garmin_password, False)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except Exception as exc:  # pylint: disable=broad-except
+        return jsonify({'error': f'Garmin sync failed: {exc}'}), 500
+
+    return jsonify({'message': f'Successfully synced {added} readings from OMRON to Garmin Connect.'})
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--host', default='0.0.0.0')
     parser.add_argument('--port', type=int, default=5000)
     args = parser.parse_args()
-    app.run(host=args.host, port=args.port)
+    serve(app, host=args.host, port=args.port)
