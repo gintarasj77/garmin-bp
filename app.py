@@ -42,13 +42,17 @@ def sync_to_garmin(
         if lookup in existing:
             continue
 
-        gc.set_blood_pressure(
-            timestamp=dt_local.isoformat(timespec='seconds'),
-            systolic=r['systolic'],
-            diastolic=r['diastolic'],
-            pulse=r['hr'],
-            notes=None,
-        )
+        pulse_value = r['hr'] if r['hr'] and r['hr'] > 0 else None
+        try:
+            gc.set_blood_pressure(
+                timestamp=dt_local.isoformat(timespec='seconds'),
+                systolic=r['systolic'],
+                diastolic=r['diastolic'],
+                pulse=pulse_value,
+                notes=None,
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            raise ValueError(f"Garmin API error while uploading {dt_local.isoformat(timespec='seconds')}: {exc}") from exc
         added += 1
     return added
 
