@@ -166,6 +166,13 @@
       background: #4b5563;
     }
 
+    .btn-inline {
+      width: auto;
+      margin-top: 0;
+      padding: 6px 10px;
+      font-size: 0.85rem;
+    }
+
     .hidden {
       display: none;
     }
@@ -191,23 +198,37 @@
     <form id="convert-form" action="/convert" method="post" enctype="multipart/form-data">
       <div class="garmin-section">
         <div class="section-title">Garmin Connect (optional)</div>
-        <input id="garmin_email" name="garmin_email" type="email" placeholder="Garmin email" autocomplete="username" />
-        <input id="garmin_password" name="garmin_password" type="password" placeholder="Garmin password" autocomplete="current-password" />
-        <label style="display: flex; gap: 8px; align-items: center; font-weight: 500;">
-          <input type="checkbox" id="save_garmin" />
-          Remember Garmin credentials on this device
-        </label>
+        <div id="garmin-saved" class="connected-status hidden">
+          <span class="status-dot"></span>
+          Credentials loaded from this browser.
+          <button type="button" id="garmin-disconnect" class="btn-secondary btn-inline">Disconnect</button>
+        </div>
+        <div id="garmin-fields">
+          <input id="garmin_email" name="garmin_email" type="email" placeholder="Garmin email" autocomplete="username" />
+          <input id="garmin_password" name="garmin_password" type="password" placeholder="Garmin password" autocomplete="current-password" />
+          <label style="display: flex; gap: 8px; align-items: center; font-weight: 500;">
+            <input type="checkbox" id="save_garmin" />
+            Remember Garmin credentials on this device
+          </label>
+        </div>
       </div>
 
       <div class="garmin-section">
         <div class="section-title">OMRON Connect (optional)</div>
-        <input id="omron_email" name="omron_email" type="email" placeholder="OMRON email" autocomplete="username" />
-        <input id="omron_password" name="omron_password" type="password" placeholder="OMRON password" autocomplete="current-password" />
-        <input id="omron_country" name="omron_country" type="text" placeholder="Country code (e.g., LT)" maxlength="2" />
-        <label style="display: flex; gap: 8px; align-items: center; font-weight: 500;">
-          <input type="checkbox" id="save_omron" />
-          Remember OMRON credentials on this device
-        </label>
+        <div id="omron-saved" class="connected-status hidden">
+          <span class="status-dot"></span>
+          Credentials loaded from this browser.
+          <button type="button" id="omron-disconnect" class="btn-secondary btn-inline">Disconnect</button>
+        </div>
+        <div id="omron-fields">
+          <input id="omron_email" name="omron_email" type="email" placeholder="OMRON email" autocomplete="username" />
+          <input id="omron_password" name="omron_password" type="password" placeholder="OMRON password" autocomplete="current-password" />
+          <input id="omron_country" name="omron_country" type="text" placeholder="Country code (e.g., LT)" maxlength="2" />
+          <label style="display: flex; gap: 8px; align-items: center; font-weight: 500;">
+            <input type="checkbox" id="save_omron" />
+            Remember OMRON credentials on this device
+          </label>
+        </div>
       </div>
 
       <button type="submit" class="btn-secondary" data-action="omron">Sync from OMRON to Garmin</button>
@@ -224,10 +245,16 @@
     const garminEmail = document.getElementById('garmin_email');
     const garminPassword = document.getElementById('garmin_password');
     const saveGarmin = document.getElementById('save_garmin');
+    const garminFields = document.getElementById('garmin-fields');
+    const garminSaved = document.getElementById('garmin-saved');
+    const garminDisconnect = document.getElementById('garmin-disconnect');
     const omronEmail = document.getElementById('omron_email');
     const omronPassword = document.getElementById('omron_password');
     const omronCountry = document.getElementById('omron_country');
     const saveOmron = document.getElementById('save_omron');
+    const omronFields = document.getElementById('omron-fields');
+    const omronSaved = document.getElementById('omron-saved');
+    const omronDisconnect = document.getElementById('omron-disconnect');
 
     let pendingAction = 'omron';
 
@@ -237,20 +264,51 @@
       });
     });
 
-    const storedGarmin = JSON.parse(localStorage.getItem('garminCreds') || 'null');
-    if (storedGarmin) {
-      garminEmail.value = storedGarmin.email || '';
-      garminPassword.value = storedGarmin.password || '';
-      saveGarmin.checked = true;
+    function applyStoredCreds() {
+      const storedGarmin = JSON.parse(localStorage.getItem('garminCreds') || 'null');
+      if (storedGarmin && (storedGarmin.email || storedGarmin.password)) {
+        garminEmail.value = storedGarmin.email || '';
+        garminPassword.value = storedGarmin.password || '';
+        saveGarmin.checked = true;
+        garminFields.classList.add('hidden');
+        garminSaved.classList.remove('hidden');
+      } else {
+        garminFields.classList.remove('hidden');
+        garminSaved.classList.add('hidden');
+      }
+
+      const storedOmron = JSON.parse(localStorage.getItem('omronCreds') || 'null');
+      if (storedOmron && (storedOmron.email || storedOmron.password || storedOmron.country)) {
+        omronEmail.value = storedOmron.email || '';
+        omronPassword.value = storedOmron.password || '';
+        omronCountry.value = storedOmron.country || '';
+        saveOmron.checked = true;
+        omronFields.classList.add('hidden');
+        omronSaved.classList.remove('hidden');
+      } else {
+        omronFields.classList.remove('hidden');
+        omronSaved.classList.add('hidden');
+      }
     }
 
-    const storedOmron = JSON.parse(localStorage.getItem('omronCreds') || 'null');
-    if (storedOmron) {
-      omronEmail.value = storedOmron.email || '';
-      omronPassword.value = storedOmron.password || '';
-      omronCountry.value = storedOmron.country || '';
-      saveOmron.checked = true;
-    }
+    applyStoredCreds();
+
+    garminDisconnect.addEventListener('click', () => {
+      localStorage.removeItem('garminCreds');
+      garminEmail.value = '';
+      garminPassword.value = '';
+      saveGarmin.checked = false;
+      applyStoredCreds();
+    });
+
+    omronDisconnect.addEventListener('click', () => {
+      localStorage.removeItem('omronCreds');
+      omronEmail.value = '';
+      omronPassword.value = '';
+      omronCountry.value = '';
+      saveOmron.checked = false;
+      applyStoredCreds();
+    });
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
