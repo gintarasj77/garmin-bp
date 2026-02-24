@@ -464,15 +464,15 @@
 
         <div class="garmin-section">
           <div class="section-title">Garmin Connect</div>
-          <div id="garmin-saved" class="connected-status hidden">
+          <div id="garmin-saved" class="connected-status{% if not credential_status.garmin.saved %} hidden{% endif %}">
             <span class="status-dot"></span>
             Encrypted Garmin credentials are saved on server.
             <button type="button" id="garmin-disconnect" class="btn-secondary btn-inline">Disconnect</button>
           </div>
-          <div id="garmin-fields">
+          <div id="garmin-fields"{% if credential_status.garmin.saved %} class="hidden"{% endif %}>
             <div class="field">
               <label class="field-label" for="garmin_email">Garmin email</label>
-              <input id="garmin_email" name="garmin_email" type="email" placeholder="name@example.com" autocomplete="username" />
+              <input id="garmin_email" name="garmin_email" type="email" placeholder="name@example.com" autocomplete="username" value="{{ credential_status.garmin.email if credential_status.garmin.saved else '' }}" />
               <div class="field-support">Required unless encrypted server credentials are already saved.</div>
             </div>
             <div class="field">
@@ -481,7 +481,7 @@
               <div class="field-support">Used for sync and optionally saved encrypted on server.</div>
             </div>
             <label class="remember-row">
-              <input type="checkbox" id="save_garmin" name="save_garmin" />
+              <input type="checkbox" id="save_garmin" name="save_garmin"{% if credential_status.garmin.saved %} checked{% endif %} />
               Save Garmin credentials encrypted on server
             </label>
           </div>
@@ -489,15 +489,15 @@
 
         <div class="garmin-section">
           <div class="section-title">OMRON Connect</div>
-          <div id="omron-saved" class="connected-status hidden">
+          <div id="omron-saved" class="connected-status{% if not credential_status.omron.saved %} hidden{% endif %}">
             <span class="status-dot"></span>
             Encrypted OMRON credentials are saved on server.
             <button type="button" id="omron-disconnect" class="btn-secondary btn-inline">Disconnect</button>
           </div>
-          <div id="omron-fields">
+          <div id="omron-fields"{% if credential_status.omron.saved %} class="hidden"{% endif %}>
             <div class="field">
               <label class="field-label" for="omron_email">OMRON email</label>
-              <input id="omron_email" name="omron_email" type="email" placeholder="name@example.com" autocomplete="username" />
+              <input id="omron_email" name="omron_email" type="email" placeholder="name@example.com" autocomplete="username" value="{{ credential_status.omron.email if credential_status.omron.saved else '' }}" />
               <div class="field-support">Required unless encrypted server credentials are already saved.</div>
             </div>
             <div class="field">
@@ -507,11 +507,11 @@
             </div>
             <div class="field">
               <label class="field-label" for="omron_country">Country code</label>
-              <input id="omron_country" name="omron_country" type="text" placeholder="US" maxlength="2" />
+              <input id="omron_country" name="omron_country" type="text" placeholder="US" maxlength="2" value="{{ credential_status.omron.country if credential_status.omron.saved else '' }}" />
               <div class="field-support">Use ISO 3166-1 alpha-2 code (for example, US, LT, DE).</div>
             </div>
             <label class="remember-row">
-              <input type="checkbox" id="save_omron" name="save_omron" />
+              <input type="checkbox" id="save_omron" name="save_omron"{% if credential_status.omron.saved %} checked{% endif %} />
               Save OMRON credentials encrypted on server
             </label>
           </div>

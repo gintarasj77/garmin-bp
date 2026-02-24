@@ -392,7 +392,14 @@ def get_existing_bp_timestamps(gc: Garmin, readings: list[dict[str, int | dateti
 @app.route('/', methods=['GET'])
 @login_required
 def index():
-    return render_template('index.html', username=session.get("username", ""))
+    user_id = _current_user_id()
+    if user_id is None:
+        return redirect(url_for("login_page"))
+    return render_template(
+        'index.html',
+        username=session.get("username", ""),
+        credential_status=STORE.get_status(user_id),
+    )
 
 
 @app.route('/sync-omron', methods=['POST'])
