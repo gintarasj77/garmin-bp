@@ -61,7 +61,7 @@ def _current_user_id() -> int | None:
 
 
 def _registration_open() -> bool:
-    return STORE.user_count() == 0 or os.getenv("ALLOW_REGISTRATION", "0") == "1"
+    return True
 
 
 def _csrf_token() -> str:

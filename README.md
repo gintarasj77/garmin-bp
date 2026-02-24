@@ -31,9 +31,6 @@ Flask web app to sync OMRON Connect blood pressure readings to Garmin Connect.
   - Set `0` for local HTTP testing
 - `SESSION_LIFETIME_HOURS`:
   - Session lifetime in hours (default `12`)
-- `ALLOW_REGISTRATION`:
-  - `0` (default): only first account can self-register, then registration closes
-  - `1`: keep registration open
 - `APP_DB_PATH`:
   - SQLite database path (default `data/app.db`)
 
@@ -71,7 +68,6 @@ The app includes a `Procfile` for start-command autodetection.
 
 1. Open the app and create the first account.
 2. Sign in with that account.
-3. (Optional) Keep registration closed (`ALLOW_REGISTRATION=0`) after first account is created.
 
 ## Usage
 
