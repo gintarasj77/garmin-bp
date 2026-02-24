@@ -94,6 +94,15 @@ By default, app binds to `127.0.0.1`. For LAN/public exposure:
 - Run auth/security tests:
   - `.venv\Scripts\python -m unittest discover -s tests -p "test_*.py" -v`
 
+## Health checks
+
+- `GET /healthz`:
+  - Liveness check (process is running)
+  - Returns `200` with JSON status
+- `GET /readyz`:
+  - Readiness check (database + encryption subsystem)
+  - Returns `200` when ready, `503` when not ready
+
 ## CI/CD
 
 - GitHub Actions workflow: `.github/workflows/ci.yml`
@@ -112,6 +121,8 @@ By default, app binds to `127.0.0.1`. For LAN/public exposure:
 4. Use:
    - Build command: `pip install -r requirements.txt`
    - Start command: `python app.py --host 0.0.0.0 --port $PORT`
+5. In Render service settings, set:
+   - Health Check Path: `/readyz`
 
 The app includes a `Procfile` for start-command autodetection.
 

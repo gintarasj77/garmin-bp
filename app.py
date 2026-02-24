@@ -240,6 +240,42 @@ def _app_base_url() -> str:
     return request.url_root.rstrip("/")
 
 
+def _json_no_store(payload: dict[str, object], status_code: int = 200):
+    response = jsonify(payload)
+    response.status_code = status_code
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _readiness_payload() -> tuple[dict[str, object], int]:
+    database_ok, database_reason = STORE.check_database()
+    crypto_ok, crypto_reason = STORE.check_crypto()
+    is_ready = database_ok and crypto_ok
+
+    database_check: dict[str, object] = {
+        "status": "ok" if database_ok else "fail",
+        "backend": STORE.backend_name(),
+    }
+    if not database_ok:
+        database_check["reason"] = database_reason
+
+    crypto_check: dict[str, object] = {
+        "status": "ok" if crypto_ok else "fail",
+    }
+    if not crypto_ok:
+        crypto_check["reason"] = crypto_reason
+
+    payload: dict[str, object] = {
+        "status": "ready" if is_ready else "not_ready",
+        "checks": {
+            "database": database_check,
+            "crypto": crypto_check,
+        },
+        "time_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    return payload, (200 if is_ready else 503)
+
+
 def _send_password_reset_email(recipient: str, reset_link: str) -> bool:
     smtp_host = os.getenv("SMTP_HOST", "").strip()
     smtp_from = os.getenv("SMTP_FROM", "").strip()
@@ -305,6 +341,23 @@ def admin_required(func):
         return func(*args, **kwargs)
 
     return wrapped
+
+
+@app.route("/healthz", methods=["GET"])
+def healthz():
+    return _json_no_store(
+        {
+            "status": "alive",
+            "service": "omron-to-garmin-sync",
+            "time_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+    )
+
+
+@app.route("/readyz", methods=["GET"])
+def readyz():
+    payload, status_code = _readiness_payload()
+    return _json_no_store(payload, status_code)
 
 
 @app.route("/login", methods=["GET"])

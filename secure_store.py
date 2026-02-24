@@ -319,6 +319,39 @@ class SecureStore:
         except (InvalidToken, ValueError):
             return None
 
+    def backend_name(self) -> str:
+        return self._backend
+
+    def check_database(self) -> tuple[bool, str]:
+        try:
+            row = self._fetchone("SELECT 1 AS ok")
+        except Exception:
+            return False, "database query failed"
+
+        if not row:
+            return False, "database returned no result"
+
+        try:
+            if int(row["ok"]) != 1:
+                return False, "database returned unexpected result"
+        except (TypeError, ValueError, KeyError):
+            pass
+
+        return True, ""
+
+    def check_crypto(self) -> tuple[bool, str]:
+        try:
+            probe = secrets.token_urlsafe(16)
+            encrypted = self._fernet.encrypt(probe.encode("utf-8"))
+            decrypted = self._fernet.decrypt(encrypted).decode("utf-8")
+        except Exception:
+            return False, "encryption round-trip failed"
+
+        if decrypted != probe:
+            return False, "encryption round-trip mismatch"
+
+        return True, ""
+
     def user_count(self) -> int:
         row = self._fetchone("SELECT COUNT(*) AS count FROM users")
         return int(row["count"]) if row else 0

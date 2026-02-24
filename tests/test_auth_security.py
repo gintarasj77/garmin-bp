@@ -354,6 +354,41 @@ class AuthSecurityTests(unittest.TestCase):
         self.assertEqual(blocked.status_code, 400)
         self.assertIn("last admin", blocked.get_data(as_text=True))
 
+    def test_healthz_returns_alive(self):
+        client = self.app.test_client()
+        response = client.get("/healthz")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("status"), "alive")
+        self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+
+    def test_readyz_returns_ready_when_dependencies_ok(self):
+        client = self.app.test_client()
+        response = client.get("/readyz")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        checks = payload.get("checks", {})
+
+        self.assertEqual(payload.get("status"), "ready")
+        self.assertEqual(checks.get("database", {}).get("status"), "ok")
+        self.assertEqual(checks.get("crypto", {}).get("status"), "ok")
+        self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+
+    def test_readyz_returns_503_when_database_check_fails(self):
+        client = self.app.test_client()
+        original_check_database = self.store.check_database
+        self.store.check_database = lambda: (False, "database query failed")
+        try:
+            response = client.get("/readyz")
+        finally:
+            self.store.check_database = original_check_database
+
+        self.assertEqual(response.status_code, 503)
+        payload = response.get_json()
+        checks = payload.get("checks", {})
+        self.assertEqual(payload.get("status"), "not_ready")
+        self.assertEqual(checks.get("database", {}).get("status"), "fail")
+
     def test_security_headers_present(self):
         client = self.app.test_client()
         response = client.get("/login")
