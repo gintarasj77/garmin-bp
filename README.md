@@ -1,56 +1,88 @@
 # Omron to Garmin Sync
 
-Simple Flask web app to sync OMRON Connect blood pressure readings directly to Garmin Connect.
+Flask web app to sync OMRON Connect blood pressure readings to Garmin Connect.
 
 ## Requirements
 
-- Python 3.11+ (this project uses `enum.StrEnum`)
+- Python 3.11+ (project uses `enum.StrEnum`)
+- Dependencies in `requirements.txt` (includes `cryptography` for encrypted credential vault)
 
-## Features
+## Security model
 
-- Sync OMRON Connect blood pressure readings to Garmin Connect
-- No server-side credential storage
-- Passwords are never written to browser storage
-- Optional browser storage only for Garmin email and OMRON email/country
-- No data storage on the server; processing is in memory only
-- No third-party analytics/tracking script in the app page
+- App users authenticate with username/password (hashed with PBKDF2-SHA256)
+- Sync credentials can be stored encrypted server-side per app user
+- Sync credentials are decrypted only at request time for sync operations
+- Session uses secure cookie settings (`HttpOnly`, `SameSite=Lax`)
+- CSRF protection is enforced for write operations (`POST/PUT/PATCH/DELETE`)
+
+## Required environment variables (production)
+
+- `FLASK_SECRET_KEY`:
+  - Long random secret for session signing
+- `CREDENTIALS_ENCRYPTION_KEY`:
+  - Fernet key used to encrypt stored OMRON/Garmin credentials
+  - Generate with:
+    - `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
+
+## Optional environment variables
+
+- `SESSION_COOKIE_SECURE`:
+  - `1` (default) for HTTPS deployment
+  - Set `0` for local HTTP testing
+- `SESSION_LIFETIME_HOURS`:
+  - Session lifetime in hours (default `12`)
+- `ALLOW_REGISTRATION`:
+  - `0` (default): only first account can self-register, then registration closes
+  - `1`: keep registration open
+- `APP_DB_PATH`:
+  - SQLite database path (default `data/app.db`)
 
 ## Local run
 
 1. Create a virtual environment and install dependencies:
    - `python -m venv .venv`
    - `.venv\Scripts\python -m pip install -r requirements.txt`
-2. Start the app (Waitress, no dev-server warning):
+2. Set local env vars (PowerShell example):
+   - `$env:FLASK_SECRET_KEY = "replace-with-long-random-secret"`
+   - `$env:CREDENTIALS_ENCRYPTION_KEY = "replace-with-generated-fernet-key"`
+   - `$env:SESSION_COOKIE_SECURE = "0"`
+3. Start the app:
    - `.venv\Scripts\python app.py`
-3. Open http://127.0.0.1:5000
+4. Open `http://127.0.0.1:5000`
 
-By default, the app binds to `127.0.0.1`. For LAN/public exposure, pass an explicit host:
+By default, app binds to `127.0.0.1`. For LAN/public exposure:
 - `.venv\Scripts\python app.py --host 0.0.0.0 --port 5000`
 
 ## Render deploy
 
 1. Push this folder to a Git repository.
 2. In Render, create a **Web Service** from the repo.
-3. Use:
+3. Set environment variables in Render:
+   - `FLASK_SECRET_KEY`
+   - `CREDENTIALS_ENCRYPTION_KEY`
+   - `SESSION_COOKIE_SECURE=1`
+4. Use:
    - Build command: `pip install -r requirements.txt`
    - Start command: `python app.py --host 0.0.0.0 --port $PORT`
 
-The app uses a `Procfile` so Render can autodetect the start command.
+The app includes a `Procfile` for start-command autodetection.
+
+## First-time setup
+
+1. Open the app and create the first account.
+2. Sign in with that account.
+3. (Optional) Keep registration closed (`ALLOW_REGISTRATION=0`) after first account is created.
 
 ## Usage
 
-1. Enter your OMRON Connect credentials and country code.
-2. Enter your Garmin Connect credentials.
-3. Click "Sync from OMRON to Garmin".
-4. Your blood pressure data appears in Garmin Connect under **Health Stats > Blood Pressure**.
+1. Sign in.
+2. Enter OMRON + Garmin credentials.
+3. Optionally check "Save ... credentials encrypted on server" for one-click reuse.
+4. Click "Sync from OMRON to Garmin".
+5. Use "Disconnect" on each provider section to revoke and clear saved credentials.
 
-## Credential handling
+## Notes
 
-This app does **not** store credentials on the server.
-
-If you choose to save values in the browser, only these are stored in `localStorage`:
-- Garmin email
-- OMRON email
-- OMRON country code
-
-Passwords are not stored in `localStorage`; they are sent only for the current sync request.
+- Stored credentials are per app user account.
+- If `CREDENTIALS_ENCRYPTION_KEY` changes, previously saved credentials cannot be decrypted.
+- Use HTTPS in production.

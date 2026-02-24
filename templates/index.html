@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="csrf-token" content="{{ csrf_token }}" />
   <title>Omron to Garmin Sync</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%230f172a'/><circle cx='50' cy='50' r='40' fill='none' stroke='%2338bdf8' stroke-width='3'/><circle cx='50' cy='50' r='30' fill='%2338bdf8' opacity='0.1'/><path d='M 50 25 L 65 50 L 50 75 L 35 50 Z' fill='%2338bdf8'/></svg>" />
   <style>
@@ -85,6 +86,14 @@
       backdrop-filter: blur(6px);
     }
 
+    .card-header {
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+
     h1 {
       margin: 0;
       font-size: 1.85rem;
@@ -94,10 +103,17 @@
 
     .helper-text {
       margin-top: 8px;
-      margin-bottom: 20px;
+      margin-bottom: 0;
       color: var(--md-text-muted);
       line-height: 1.5;
       font-size: 0.93rem;
+      max-width: 44ch;
+    }
+
+    .logout-form {
+      display: flex;
+      align-items: center;
+      margin: 0;
     }
 
     form {
@@ -399,6 +415,11 @@
         border-radius: 22px;
       }
 
+      .card-header {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
       h1 {
         font-size: 1.55rem;
       }
@@ -427,30 +448,41 @@
 <body>
   <div class="page">
     <div class="card">
-      <h1>Omron to Garmin Sync</h1>
-      <div class="helper-text">Passwords are never stored in browser storage. You can optionally save emails and country.</div>
+      <div class="card-header">
+        <div>
+          <h1>Omron to Garmin Sync</h1>
+          <div class="helper-text">Signed in as {{ username }}. Credentials can be remembered in encrypted server storage for one-click sync.</div>
+        </div>
+        <form class="logout-form" action="/logout" method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+          <button type="submit" class="btn-secondary btn-inline">Sign out</button>
+        </form>
+      </div>
+
       <form id="convert-form" action="/sync-omron" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+
         <div class="garmin-section">
           <div class="section-title">Garmin Connect</div>
           <div id="garmin-saved" class="connected-status hidden">
             <span class="status-dot"></span>
-            Saved values loaded from this browser.
+            Encrypted Garmin credentials are saved on server.
             <button type="button" id="garmin-disconnect" class="btn-secondary btn-inline">Disconnect</button>
           </div>
           <div id="garmin-fields">
             <div class="field">
               <label class="field-label" for="garmin_email">Garmin email</label>
               <input id="garmin_email" name="garmin_email" type="email" placeholder="name@example.com" autocomplete="username" />
-              <div class="field-support">Stored only if you check remember.</div>
+              <div class="field-support">Required unless encrypted server credentials are already saved.</div>
             </div>
             <div class="field">
               <label class="field-label" for="garmin_password">Garmin password</label>
               <input id="garmin_password" name="garmin_password" type="password" placeholder="Enter password" autocomplete="current-password" />
-              <div class="field-support">Used for this request only. Never saved in local storage.</div>
+              <div class="field-support">Used for sync and optionally saved encrypted on server.</div>
             </div>
             <label class="remember-row">
-              <input type="checkbox" id="save_garmin" />
-              Remember Garmin email on this device
+              <input type="checkbox" id="save_garmin" name="save_garmin" />
+              Save Garmin credentials encrypted on server
             </label>
           </div>
         </div>
@@ -459,19 +491,19 @@
           <div class="section-title">OMRON Connect</div>
           <div id="omron-saved" class="connected-status hidden">
             <span class="status-dot"></span>
-            Saved values loaded from this browser.
+            Encrypted OMRON credentials are saved on server.
             <button type="button" id="omron-disconnect" class="btn-secondary btn-inline">Disconnect</button>
           </div>
           <div id="omron-fields">
             <div class="field">
               <label class="field-label" for="omron_email">OMRON email</label>
               <input id="omron_email" name="omron_email" type="email" placeholder="name@example.com" autocomplete="username" />
-              <div class="field-support">Stored only if you check remember.</div>
+              <div class="field-support">Required unless encrypted server credentials are already saved.</div>
             </div>
             <div class="field">
               <label class="field-label" for="omron_password">OMRON password</label>
               <input id="omron_password" name="omron_password" type="password" placeholder="Enter password" autocomplete="current-password" />
-              <div class="field-support">Used for this request only. Never saved in local storage.</div>
+              <div class="field-support">Used for sync and optionally saved encrypted on server.</div>
             </div>
             <div class="field">
               <label class="field-label" for="omron_country">Country code</label>
@@ -479,15 +511,15 @@
               <div class="field-support">Use ISO 3166-1 alpha-2 code (for example, US, LT, DE).</div>
             </div>
             <label class="remember-row">
-              <input type="checkbox" id="save_omron" />
-              Remember OMRON email/country on this device
+              <input type="checkbox" id="save_omron" name="save_omron" />
+              Save OMRON credentials encrypted on server
             </label>
           </div>
         </div>
 
         <button type="submit" data-action="omron">Sync from OMRON to Garmin</button>
       </form>
-      
+
       <div class="success" id="success-box" style="display: none;"></div>
       <div class="error" id="error-box" style="display: none;"></div>
     </div>
@@ -507,16 +539,19 @@
 
   <script>
     const form = document.getElementById('convert-form');
+    const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
     const submitButton = form.querySelector('button[type="submit"]');
     const submitButtonDefaultLabel = submitButton.textContent;
     const errorBox = document.getElementById('error-box');
     const successBox = document.getElementById('success-box');
+
     const garminEmail = document.getElementById('garmin_email');
     const garminPassword = document.getElementById('garmin_password');
     const saveGarmin = document.getElementById('save_garmin');
     const garminFields = document.getElementById('garmin-fields');
     const garminSaved = document.getElementById('garmin-saved');
     const garminDisconnect = document.getElementById('garmin-disconnect');
+
     const omronEmail = document.getElementById('omron_email');
     const omronPassword = document.getElementById('omron_password');
     const omronCountry = document.getElementById('omron_country');
@@ -525,180 +560,186 @@
     const omronSaved = document.getElementById('omron-saved');
     const omronDisconnect = document.getElementById('omron-disconnect');
 
-    function parseStoredObject(key) {
+    function showError(message) {
+      successBox.style.display = 'none';
+      successBox.textContent = '';
+      errorBox.textContent = message;
+      errorBox.style.display = 'block';
+    }
+
+    function showSuccess(message) {
+      errorBox.style.display = 'none';
+      errorBox.textContent = '';
+      successBox.textContent = message;
+      successBox.style.display = 'block';
+    }
+
+    function clearAlerts() {
+      errorBox.style.display = 'none';
+      errorBox.textContent = '';
+      successBox.style.display = 'none';
+      successBox.textContent = '';
+    }
+
+    async function parseJsonSafe(response) {
       try {
-        const value = JSON.parse(localStorage.getItem(key) || 'null');
-        if (value && typeof value === 'object') {
-          return value;
-        }
+        return await response.json();
       } catch {
-        // Stored value is malformed; clear it to avoid repeated parse failures.
-      }
-      localStorage.removeItem(key);
-      return null;
-    }
-
-    function sanitizeStoredCreds() {
-      const storedGarmin = parseStoredObject('garminCreds');
-      if (storedGarmin) {
-        const cleanGarmin = {
-          email: typeof storedGarmin.email === 'string' ? storedGarmin.email : ''
-        };
-        if (cleanGarmin.email) {
-          localStorage.setItem('garminCreds', JSON.stringify(cleanGarmin));
-        } else {
-          localStorage.removeItem('garminCreds');
-        }
-      }
-
-      const storedOmron = parseStoredObject('omronCreds');
-      if (storedOmron) {
-        const cleanOmron = {
-          email: typeof storedOmron.email === 'string' ? storedOmron.email : '',
-          country: typeof storedOmron.country === 'string' ? storedOmron.country : ''
-        };
-        if (cleanOmron.email || cleanOmron.country) {
-          localStorage.setItem('omronCreds', JSON.stringify(cleanOmron));
-        } else {
-          localStorage.removeItem('omronCreds');
-        }
+        return null;
       }
     }
 
-    function applyStoredCreds() {
-      sanitizeStoredCreds();
-
-      const storedGarmin = parseStoredObject('garminCreds');
-      const storedOmron = parseStoredObject('omronCreds');
-
-      const garminEmailValue = storedGarmin?.email || '';
-      garminEmail.value = garminEmailValue;
+    function applyGarminState(state) {
+      const isSaved = Boolean(state && state.saved);
+      garminEmail.value = state?.email || '';
       garminPassword.value = '';
-      if (garminEmailValue) {
-        saveGarmin.checked = true;
+      saveGarmin.checked = isSaved;
+
+      if (isSaved) {
         garminFields.classList.add('hidden');
         garminSaved.classList.remove('hidden');
       } else {
-        saveGarmin.checked = false;
         garminFields.classList.remove('hidden');
         garminSaved.classList.add('hidden');
       }
+    }
 
-      const omronEmailValue = storedOmron?.email || '';
-      const omronCountryValue = storedOmron?.country || '';
-      omronEmail.value = omronEmailValue;
-      omronCountry.value = omronCountryValue;
+    function applyOmronState(state) {
+      const isSaved = Boolean(state && state.saved);
+      omronEmail.value = state?.email || '';
+      omronCountry.value = state?.country || '';
       omronPassword.value = '';
-      if (omronEmailValue || omronCountryValue) {
-        saveOmron.checked = true;
+      saveOmron.checked = isSaved;
+
+      if (isSaved) {
         omronFields.classList.add('hidden');
         omronSaved.classList.remove('hidden');
       } else {
-        saveOmron.checked = false;
         omronFields.classList.remove('hidden');
         omronSaved.classList.add('hidden');
       }
     }
 
-    applyStoredCreds();
+    async function loadSavedCredentialStatus(showLoadError = false) {
+      try {
+        const response = await fetch('/api/credentials', {
+          method: 'GET',
+          headers: {
+            'Accept': 'application/json'
+          }
+        });
+
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
+
+        if (!response.ok) {
+          if (showLoadError) {
+            showError('Failed to load saved credential status.');
+          }
+          return;
+        }
+
+        const data = await parseJsonSafe(response);
+        if (!data) {
+          if (showLoadError) {
+            showError('Failed to parse saved credential status response.');
+          }
+          return;
+        }
+
+        applyGarminState(data.garmin || {});
+        applyOmronState(data.omron || {});
+      } catch {
+        if (showLoadError) {
+          showError('Failed to load saved credential status.');
+        }
+      }
+    }
+
+    async function disconnectProvider(provider) {
+      try {
+        const response = await fetch(`/api/credentials/${provider}`, {
+          method: 'DELETE',
+          headers: {
+            'Accept': 'application/json',
+            'X-CSRF-Token': csrfToken
+          }
+        });
+
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
+
+        const data = await parseJsonSafe(response);
+        if (!response.ok) {
+          throw new Error(data?.error || `Failed to clear ${provider} credentials.`);
+        }
+
+        await loadSavedCredentialStatus(false);
+        showSuccess(data?.message || `Cleared ${provider} credentials.`);
+      } catch (err) {
+        showError(err?.message || `Failed to clear ${provider} credentials.`);
+      }
+    }
 
     garminDisconnect.addEventListener('click', () => {
-      localStorage.removeItem('garminCreds');
-      garminEmail.value = '';
-      garminPassword.value = '';
-      saveGarmin.checked = false;
-      applyStoredCreds();
+      disconnectProvider('garmin');
     });
 
     omronDisconnect.addEventListener('click', () => {
-      localStorage.removeItem('omronCreds');
-      omronEmail.value = '';
-      omronPassword.value = '';
-      omronCountry.value = '';
-      saveOmron.checked = false;
-      applyStoredCreds();
+      disconnectProvider('omron');
     });
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
-      errorBox.style.display = 'none';
-      errorBox.textContent = '';
-      successBox.style.display = 'none';
-      successBox.textContent = '';
+      clearAlerts();
+
+      const garminEmailValue = garminEmail.value.trim();
+      const omronEmailValue = omronEmail.value.trim();
+      const omronCountryValue = omronCountry.value.trim().toUpperCase();
+      garminEmail.value = garminEmailValue;
+      omronEmail.value = omronEmailValue;
+      omronCountry.value = omronCountryValue;
+
       submitButton.disabled = true;
       submitButton.textContent = 'Syncing...';
 
-      const formData = new FormData(form);
-
       try {
-        const garminEmailValue = garminEmail.value.trim();
-        const omronEmailValue = omronEmail.value.trim();
-        const omronCountryValue = omronCountry.value.trim().toUpperCase();
-
-        garminEmail.value = garminEmailValue;
-        omronEmail.value = omronEmailValue;
-        omronCountry.value = omronCountryValue;
-
-        if (saveGarmin.checked) {
-          if (garminEmailValue) {
-            localStorage.setItem('garminCreds', JSON.stringify({
-              email: garminEmailValue
-            }));
-          } else {
-            localStorage.removeItem('garminCreds');
-          }
-        } else {
-          localStorage.removeItem('garminCreds');
-        }
-
-        if (saveOmron.checked) {
-          if (omronEmailValue || omronCountryValue) {
-            localStorage.setItem('omronCreds', JSON.stringify({
-              email: omronEmailValue,
-              country: omronCountryValue
-            }));
-          } else {
-            localStorage.removeItem('omronCreds');
-          }
-        } else {
-          localStorage.removeItem('omronCreds');
-        }
-
-        const actionUrl = '/sync-omron';
-        const response = await fetch(actionUrl, {
+        const formData = new FormData(form);
+        const response = await fetch('/sync-omron', {
           method: 'POST',
           body: formData,
-          headers: { 'Accept': 'application/json' }
+          headers: {
+            'Accept': 'application/json',
+            'X-CSRF-Token': csrfToken
+          }
         });
 
-        if (!response.ok) {
-          let message = 'Sync failed.';
-          try {
-            const data = await response.json();
-            if (data.error) {
-              message = data.error;
-            }
-          } catch {
-            // ignore
-          }
-          errorBox.textContent = message;
-          errorBox.style.display = 'block';
+        if (response.status === 401) {
+          window.location.href = '/login';
           return;
         }
 
-        const data = await response.json();
-        successBox.textContent = data.message || 'Sync complete.';
-        successBox.style.display = 'block';
+        const data = await parseJsonSafe(response);
+        if (!response.ok) {
+          showError(data?.error || 'Sync failed.');
+          return;
+        }
+
+        showSuccess(data?.message || 'Sync complete.');
+        await loadSavedCredentialStatus(false);
       } catch (err) {
-        console.error('Exception:', err);
-        errorBox.textContent = 'Request failed: ' + (err?.message || String(err));
-        errorBox.style.display = 'block';
+        showError('Request failed: ' + (err?.message || String(err)));
       } finally {
         submitButton.disabled = false;
         submitButton.textContent = submitButtonDefaultLabel;
       }
     });
 
+    loadSavedCredentialStatus(true);
   </script>
 </body>
 </html>
