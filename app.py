@@ -77,6 +77,8 @@ _login_lockout_seconds = int(os.getenv("LOGIN_LOCKOUT_SECONDS", "900"))
 _password_reset_ttl_seconds = int(os.getenv("PASSWORD_RESET_TOKEN_TTL_SECONDS", "3600"))
 _login_throttle_retention_seconds = int(os.getenv("LOGIN_THROTTLE_RETENTION_SECONDS", "604800"))
 _login_throttle_max_rows = int(os.getenv("LOGIN_THROTTLE_MAX_ROWS", "50000"))
+_audit_retention_days = int(os.getenv("AUDIT_RETENTION_DAYS", "180"))
+_audit_max_rows = int(os.getenv("AUDIT_MAX_ROWS", "200000"))
 _hsts_enabled = _env_flag("HSTS_ENABLED", _is_production)
 
 STORE = SecureStore(
@@ -88,6 +90,8 @@ STORE = SecureStore(
     login_lockout_seconds=_login_lockout_seconds,
     throttle_retention_seconds=_login_throttle_retention_seconds,
     throttle_max_rows=_login_throttle_max_rows,
+    audit_retention_seconds=max(1, _audit_retention_days) * 86400,
+    audit_max_rows=_audit_max_rows,
 )
 
 if _database_url:
@@ -117,6 +121,13 @@ def _current_user_id() -> int | None:
         return None
 
 
+def _session_version_from_user(user: dict[str, str | int | bool]) -> int:
+    try:
+        return int(user.get("session_version", 1))
+    except (TypeError, ValueError):
+        return 1
+
+
 def _current_user() -> dict[str, str | int | bool] | None:
     if getattr(g, "_current_user_loaded", False):
         return getattr(g, "current_user", None)
@@ -133,8 +144,30 @@ def _current_user() -> dict[str, str | int | bool] | None:
         g.current_user = None
         return None
 
+    expected_session_version = _session_version_from_user(user)
+    try:
+        session_version = int(session.get("session_version", -1))
+    except (TypeError, ValueError):
+        session_version = -1
+    if session_version != expected_session_version:
+        session.clear()
+        g.current_user = None
+        _record_audit_event(
+            "session.invalidated",
+            outcome="success",
+            target_user_id=int(user["id"]),
+            username=str(user["username"]),
+            details={
+                "reason": "session_version_mismatch",
+                "expected": expected_session_version,
+                "received": session_version,
+            },
+        )
+        return None
+
     session["username"] = str(user["username"])
     session["is_admin"] = bool(user.get("is_admin"))
+    session["session_version"] = expected_session_version
     g.current_user = user
     return user
 
@@ -221,6 +254,38 @@ def _forbidden_response(message: str):
 
 def _client_ip() -> str:
     return (request.remote_addr or "").strip()
+
+
+def _record_audit_event(
+    event_type: str,
+    outcome: str = "success",
+    actor_user_id: int | None = None,
+    target_user_id: int | None = None,
+    username: str | None = None,
+    details: dict[str, object] | None = None,
+) -> None:
+    try:
+        STORE.record_audit_event(
+            event_type=event_type,
+            outcome=outcome,
+            actor_user_id=actor_user_id if actor_user_id is not None else _current_user_id(),
+            target_user_id=target_user_id,
+            username=username,
+            ip_address=_client_ip(),
+            details=details,
+        )
+    except Exception:  # pylint: disable=broad-except
+        app.logger.exception("Audit event write failed for %s", event_type)
+
+
+def _set_authenticated_session(user: dict[str, str | int | bool]) -> None:
+    session.clear()
+    session["user_id"] = int(user["id"])
+    session["username"] = str(user["username"])
+    session["is_admin"] = bool(user.get("is_admin"))
+    session["session_version"] = _session_version_from_user(user)
+    session["csrf_token"] = secrets.token_urlsafe(32)
+    session.permanent = True
 
 
 def _format_duration(seconds: int) -> str:
@@ -391,6 +456,13 @@ def forgot_password_action():
         reset_link = f"{_app_base_url()}/reset-password/{token}"
         _send_password_reset_email(recipient, reset_link)
 
+    _record_audit_event(
+        "auth.password_reset.requested",
+        outcome="success",
+        username=username,
+        details={"account_exists": created},
+    )
+
     return render_template(
         "forgot_password.html",
         error=None,
@@ -409,6 +481,12 @@ def login_action():
 
     lockout_seconds = STORE.get_login_lockout_seconds(username, client_ip)
     if lockout_seconds > 0:
+        _record_audit_event(
+            "auth.login.blocked",
+            outcome="blocked",
+            username=username,
+            details={"reason": "lockout", "remaining_seconds": lockout_seconds},
+        )
         return (
             render_template(
                 "login.html",
@@ -427,9 +505,17 @@ def login_action():
                 f"Too many failed attempts. Try again in {_format_duration(lockout_after_failure)}."
             )
             status_code = 429
+            outcome = "blocked"
         else:
             error_message = "Invalid username or password."
             status_code = 401
+            outcome = "failure"
+        _record_audit_event(
+            "auth.login.failed",
+            outcome=outcome,
+            username=username,
+            details={"status_code": status_code},
+        )
         return (
             render_template(
                 "login.html",
@@ -440,12 +526,14 @@ def login_action():
         )
 
     STORE.clear_login_failures(username, client_ip)
-    session.clear()
-    session["user_id"] = user["id"]
-    session["username"] = user["username"]
-    session["is_admin"] = bool(user.get("is_admin"))
-    session["csrf_token"] = secrets.token_urlsafe(32)
-    session.permanent = True
+    _set_authenticated_session(user)
+    _record_audit_event(
+        "auth.login.success",
+        outcome="success",
+        actor_user_id=int(user["id"]),
+        target_user_id=int(user["id"]),
+        username=str(user["username"]),
+    )
     return redirect(url_for("index"))
 
 
@@ -479,16 +567,40 @@ def reset_password_action(token: str):
 
     valid, message = STORE.validate_password_reset_token(token)
     if not valid:
+        _record_audit_event(
+            "auth.password_reset.failed",
+            outcome="failure",
+            details={"reason": message},
+        )
         return _render_reset_password_page(token, error=message, status_code=400)
 
     new_password = request.form.get("new_password", "")
     confirm_password = request.form.get("confirm_password", "")
     if new_password != confirm_password:
+        _record_audit_event(
+            "auth.password_reset.failed",
+            outcome="failure",
+            details={"reason": "password_mismatch"},
+        )
         return _render_reset_password_page(token, error="Passwords do not match.", status_code=400)
 
-    reset_ok, reset_message = STORE.consume_password_reset_token(token, new_password)
+    reset_ok, reset_message, user_id, reset_username = STORE.consume_password_reset_token(token, new_password)
     if not reset_ok:
+        _record_audit_event(
+            "auth.password_reset.failed",
+            outcome="failure",
+            username=reset_username or None,
+            target_user_id=user_id if user_id is not None else None,
+            details={"reason": reset_message},
+        )
         return _render_reset_password_page(token, error=reset_message, status_code=400)
+
+    _record_audit_event(
+        "auth.password_reset.success",
+        outcome="success",
+        target_user_id=user_id if user_id is not None else None,
+        username=reset_username or None,
+    )
 
     return render_template(
         "login.html",
@@ -500,6 +612,11 @@ def reset_password_action(token: str):
 @app.route("/register", methods=["POST"])
 def register_action():
     if not _registration_open():
+        _record_audit_event(
+            "auth.register.blocked",
+            outcome="blocked",
+            details={"reason": "registration_closed"},
+        )
         return (
             render_template(
                 "login.html",
@@ -514,6 +631,11 @@ def register_action():
     confirm = request.form.get("register_confirm_password", "")
 
     if not username:
+        _record_audit_event(
+            "auth.register.failed",
+            outcome="failure",
+            details={"reason": "missing_username"},
+        )
         return (
             render_template(
                 "login.html",
@@ -524,6 +646,12 @@ def register_action():
         )
 
     if password != confirm:
+        _record_audit_event(
+            "auth.register.failed",
+            outcome="failure",
+            username=username or None,
+            details={"reason": "password_mismatch"},
+        )
         return (
             render_template(
                 "login.html",
@@ -535,6 +663,12 @@ def register_action():
 
     created, message = STORE.create_user(username, password)
     if not created:
+        _record_audit_event(
+            "auth.register.failed",
+            outcome="failure",
+            username=username or None,
+            details={"reason": message},
+        )
         return (
             render_template(
                 "login.html",
@@ -546,6 +680,12 @@ def register_action():
 
     user = STORE.authenticate_user(username, password)
     if not user:
+        _record_audit_event(
+            "auth.register.failed",
+            outcome="failure",
+            username=username or None,
+            details={"reason": "authenticate_after_create_failed"},
+        )
         return (
             render_template(
                 "login.html",
@@ -555,18 +695,29 @@ def register_action():
             500,
         )
 
-    session.clear()
-    session["user_id"] = user["id"]
-    session["username"] = user["username"]
-    session["is_admin"] = bool(user.get("is_admin"))
-    session["csrf_token"] = secrets.token_urlsafe(32)
-    session.permanent = True
+    _set_authenticated_session(user)
+    _record_audit_event(
+        "auth.register.success",
+        outcome="success",
+        actor_user_id=int(user["id"]),
+        target_user_id=int(user["id"]),
+        username=str(user["username"]),
+    )
     return redirect(url_for("index"))
 
 
 @app.route("/logout", methods=["POST"])
 @login_required
 def logout_action():
+    user = _current_user()
+    if user is not None:
+        _record_audit_event(
+            "auth.logout",
+            outcome="success",
+            actor_user_id=int(user["id"]),
+            target_user_id=int(user["id"]),
+            username=str(user["username"]),
+        )
     session.clear()
     return redirect(url_for("login_page"))
 
@@ -611,9 +762,29 @@ def change_password_action():
 
     changed, message = STORE.change_password(int(user["id"]), current_password, new_password)
     if not changed:
+        _record_audit_event(
+            "auth.password_change.failed",
+            outcome="failure",
+            actor_user_id=int(user["id"]),
+            target_user_id=int(user["id"]),
+            username=str(user["username"]),
+            details={"reason": message},
+        )
         return _render_account_page(error=message, status_code=400)
 
-    return _render_account_page(success="Password updated successfully.")
+    _record_audit_event(
+        "auth.password_change.success",
+        outcome="success",
+        actor_user_id=int(user["id"]),
+        target_user_id=int(user["id"]),
+        username=str(user["username"]),
+    )
+    session.clear()
+    return render_template(
+        "login.html",
+        error="Password updated successfully. Please sign in again.",
+        registration_open=_registration_open(),
+    )
 
 
 @app.route("/account/delete", methods=["POST"])
@@ -633,8 +804,23 @@ def delete_account_action():
 
     deleted, message = STORE.delete_own_account(int(user["id"]), current_password)
     if not deleted:
+        _record_audit_event(
+            "auth.account_delete.failed",
+            outcome="failure",
+            actor_user_id=int(user["id"]),
+            target_user_id=int(user["id"]),
+            username=str(user["username"]),
+            details={"reason": message},
+        )
         return _render_account_page(error=message, status_code=400)
 
+    _record_audit_event(
+        "auth.account_delete.success",
+        outcome="success",
+        actor_user_id=int(user["id"]),
+        target_user_id=int(user["id"]),
+        username=str(user["username"]),
+    )
     session.clear()
     return render_template(
         "login.html",
@@ -655,6 +841,7 @@ def admin_users_page():
         username=str(user["username"]),
         current_user_id=int(user["id"]),
         users=STORE.list_users(),
+        audit_events=STORE.list_audit_events(limit=100),
         error=request.args.get("error", "").strip() or None,
         success=request.args.get("success", "").strip() or None,
     )
@@ -673,17 +860,34 @@ def admin_user_action(target_user_id: int, action: str):
     if action_clean == "disable":
         ok, message = STORE.set_user_active(actor_user_id, target_user_id, False)
         success_message = "User disabled."
+        event_type = "admin.user.disable"
     elif action_clean == "enable":
         ok, message = STORE.set_user_active(actor_user_id, target_user_id, True)
         success_message = "User enabled."
+        event_type = "admin.user.enable"
     elif action_clean == "delete":
         ok, message = STORE.delete_user(actor_user_id, target_user_id)
         success_message = "User deleted."
+        event_type = "admin.user.delete"
     else:
         abort(404)
 
     if ok:
+        _record_audit_event(
+            event_type,
+            outcome="success",
+            actor_user_id=actor_user_id,
+            target_user_id=target_user_id,
+            details={"action": action_clean},
+        )
         return redirect(url_for("admin_users_page", success=success_message))
+    _record_audit_event(
+        event_type,
+        outcome="failure",
+        actor_user_id=actor_user_id,
+        target_user_id=target_user_id,
+        details={"action": action_clean, "reason": message},
+    )
     return redirect(url_for("admin_users_page", error=message))
 
 

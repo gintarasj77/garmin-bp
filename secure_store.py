@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import hmac
+import json
 import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -90,6 +91,8 @@ class SecureStore:
         login_lockout_seconds: int = 900,
         throttle_retention_seconds: int = 604_800,
         throttle_max_rows: int = 50_000,
+        audit_retention_seconds: int = 15_552_000,
+        audit_max_rows: int = 200_000,
     ):
         self._backend = "postgres" if database_url else "sqlite"
         self._integrity_error = sqlite3.IntegrityError
@@ -101,6 +104,8 @@ class SecureStore:
         self.login_lockout_seconds = max(60, int(login_lockout_seconds))
         self.throttle_retention_seconds = max(3600, int(throttle_retention_seconds))
         self.throttle_max_rows = max(1000, int(throttle_max_rows))
+        self.audit_retention_seconds = max(86_400, int(audit_retention_seconds))
+        self.audit_max_rows = max(1000, int(audit_max_rows))
 
         if database_url:
             normalized = self._normalize_database_url(database_url)
@@ -180,6 +185,7 @@ class SecureStore:
         if self._is_postgres():
             conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE")
             conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE")
+            conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS session_version INTEGER NOT NULL DEFAULT 1")
             return
 
         rows = conn.execute("PRAGMA table_info(users)").fetchall()
@@ -188,6 +194,8 @@ class SecureStore:
             conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
         if "is_active" not in existing:
             conn.execute("ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
+        if "session_version" not in existing:
+            conn.execute("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1")
 
     def _init_db(self) -> None:
         with self._connect() as conn:
@@ -201,7 +209,8 @@ class SecureStore:
                         password_hash TEXT NOT NULL,
                         created_at TEXT NOT NULL,
                         is_admin INTEGER NOT NULL DEFAULT 0,
-                        is_active INTEGER NOT NULL DEFAULT 1
+                        is_active INTEGER NOT NULL DEFAULT 1,
+                        session_version INTEGER NOT NULL DEFAULT 1
                     )
                     """
                 )
@@ -245,6 +254,33 @@ class SecureStore:
                     )
                     """
                 )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS audit_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        event_type TEXT NOT NULL,
+                        outcome TEXT NOT NULL,
+                        actor_user_id INTEGER,
+                        target_user_id INTEGER,
+                        username TEXT,
+                        ip_address TEXT,
+                        details TEXT,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_audit_events_created_at
+                    ON audit_events(created_at DESC)
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_audit_events_event_type
+                    ON audit_events(event_type)
+                    """
+                )
             else:
                 conn.execute(
                     """
@@ -254,7 +290,8 @@ class SecureStore:
                         password_hash TEXT NOT NULL,
                         created_at TEXT NOT NULL,
                         is_admin BOOLEAN NOT NULL DEFAULT FALSE,
-                        is_active BOOLEAN NOT NULL DEFAULT TRUE
+                        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                        session_version INTEGER NOT NULL DEFAULT 1
                     )
                     """
                 )
@@ -296,6 +333,33 @@ class SecureStore:
                         created_at TEXT NOT NULL,
                         FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
                     )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS audit_events (
+                        id BIGSERIAL PRIMARY KEY,
+                        event_type TEXT NOT NULL,
+                        outcome TEXT NOT NULL,
+                        actor_user_id BIGINT,
+                        target_user_id BIGINT,
+                        username TEXT,
+                        ip_address TEXT,
+                        details TEXT,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_audit_events_created_at
+                    ON audit_events(created_at DESC)
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_audit_events_event_type
+                    ON audit_events(event_type)
                     """
                 )
 
@@ -389,10 +453,10 @@ class SecureStore:
         try:
             self._execute(
                 """
-                INSERT INTO users (username, password_hash, created_at, is_admin, is_active)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO users (username, password_hash, created_at, is_admin, is_active, session_version)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (username_normalized, password_hash, self._now_iso(), is_admin, True),
+                (username_normalized, password_hash, self._now_iso(), is_admin, True, 1),
             )
             return True, ""
         except self._integrity_error as exc:
@@ -402,7 +466,7 @@ class SecureStore:
 
     def get_user_by_id(self, user_id: int) -> dict[str, str | int | bool] | None:
         row = self._fetchone(
-            "SELECT id, username, created_at, is_admin, is_active FROM users WHERE id = ?",
+            "SELECT id, username, created_at, is_admin, is_active, session_version FROM users WHERE id = ?",
             (user_id,),
         )
         if not row:
@@ -413,6 +477,7 @@ class SecureStore:
             "created_at": str(row["created_at"]),
             "is_admin": _to_bool(row.get("is_admin")),
             "is_active": _to_bool(row.get("is_active")),
+            "session_version": int(row.get("session_version") or 1),
         }
 
     def is_admin(self, user_id: int) -> bool:
@@ -425,7 +490,7 @@ class SecureStore:
         username_normalized = _normalize_username(username)
         row = self._fetchone(
             """
-            SELECT id, username, password_hash, is_admin, is_active
+            SELECT id, username, password_hash, is_admin, is_active, session_version
             FROM users
             WHERE username = ?
             """,
@@ -441,6 +506,7 @@ class SecureStore:
             "id": int(row["id"]),
             "username": str(row["username"]),
             "is_admin": _to_bool(row.get("is_admin")),
+            "session_version": int(row.get("session_version") or 1),
         }
 
     def change_password(self, user_id: int, current_password: str, new_password: str) -> tuple[bool, str]:
@@ -458,7 +524,7 @@ class SecureStore:
             return False, "New password must be different from current password."
 
         self._execute(
-            "UPDATE users SET password_hash = ? WHERE id = ?",
+            "UPDATE users SET password_hash = ?, session_version = COALESCE(session_version, 1) + 1 WHERE id = ?",
             (_hash_password(new_password), user_id),
         )
         username = str(row["username"])
@@ -567,9 +633,9 @@ class SecureStore:
             return False, "Reset is not available for this account."
         return True, ""
 
-    def consume_password_reset_token(self, token: str, new_password: str) -> tuple[bool, str]:
+    def consume_password_reset_token(self, token: str, new_password: str) -> tuple[bool, str, int | None, str]:
         if len(new_password) < 10:
-            return False, "New password must be at least 10 characters."
+            return False, "New password must be at least 10 characters.", None, ""
 
         token_hash = _hash_reset_token(token.strip())
         now = datetime.now(timezone.utc)
@@ -588,15 +654,15 @@ class SecureStore:
             ).fetchone()
 
             if token_row is None:
-                return False, "Invalid reset link."
+                return False, "Invalid reset link.", None, ""
 
             token_data = dict(token_row) if isinstance(token_row, sqlite3.Row) else token_row
             if token_data.get("used_at"):
-                return False, "This reset link has already been used."
+                return False, "This reset link has already been used.", None, ""
 
             expires_at = _parse_iso_datetime(str(token_data["expires_at"]))
             if not expires_at or expires_at <= now:
-                return False, "This reset link has expired."
+                return False, "This reset link has expired.", None, ""
 
             user_id = int(token_data["user_id"])
             user_row = conn.execute(
@@ -604,14 +670,16 @@ class SecureStore:
                 (user_id,),
             ).fetchone()
             if user_row is None:
-                return False, "User not found."
+                return False, "User not found.", None, ""
 
             user_data = dict(user_row) if isinstance(user_row, sqlite3.Row) else user_row
             if not _to_bool(user_data.get("is_active")):
-                return False, "Reset is not available for this account."
+                return False, "Reset is not available for this account.", None, ""
 
             conn.execute(
-                self._adapt_query("UPDATE users SET password_hash = ? WHERE id = ?"),
+                self._adapt_query(
+                    "UPDATE users SET password_hash = ?, session_version = COALESCE(session_version, 1) + 1 WHERE id = ?"
+                ),
                 (_hash_password(new_password), user_id),
             )
             conn.execute(
@@ -626,8 +694,9 @@ class SecureStore:
             )
             conn.commit()
 
-            self.clear_login_failures(str(user_data["username"]), "")
-            return True, ""
+            username = str(user_data["username"])
+            self.clear_login_failures(username, "")
+            return True, "", user_id, username
 
     def list_users(self) -> list[dict[str, str | int | bool]]:
         rows = self._fetchall(
@@ -1007,3 +1076,119 @@ class SecureStore:
             return
 
         raise ValueError("Unknown provider.")
+
+    def record_audit_event(
+        self,
+        event_type: str,
+        outcome: str = "success",
+        actor_user_id: int | None = None,
+        target_user_id: int | None = None,
+        username: str | None = None,
+        ip_address: str | None = None,
+        details: Mapping[str, Any] | None = None,
+    ) -> None:
+        event_value = event_type.strip()[:120]
+        outcome_value = outcome.strip().lower()[:32] or "success"
+        username_value = (username or "").strip().lower()[:255] or None
+        ip_value = (ip_address or "").strip()[:64] or None
+        details_value = json.dumps(dict(details), sort_keys=True, separators=(",", ":")) if details else None
+
+        self._execute(
+            """
+            INSERT INTO audit_events (
+                event_type,
+                outcome,
+                actor_user_id,
+                target_user_id,
+                username,
+                ip_address,
+                details,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_value,
+                outcome_value,
+                actor_user_id,
+                target_user_id,
+                username_value,
+                ip_value,
+                details_value,
+                self._now_iso(),
+            ),
+        )
+
+        # Keep audit storage bounded under long-term operation.
+        if secrets.randbelow(25) == 0:
+            self.prune_audit_events()
+
+    def prune_audit_events(self) -> None:
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=self.audit_retention_seconds)).isoformat(
+            timespec="seconds"
+        )
+        self._execute("DELETE FROM audit_events WHERE created_at < ?", (cutoff,))
+
+        count_row = self._fetchone("SELECT COUNT(*) AS count FROM audit_events")
+        current_count = int(count_row["count"]) if count_row else 0
+        overflow = current_count - self.audit_max_rows
+        if overflow <= 0:
+            return
+
+        oldest_rows = self._fetchall(
+            """
+            SELECT id
+            FROM audit_events
+            ORDER BY created_at ASC, id ASC
+            LIMIT ?
+            """,
+            (overflow,),
+        )
+        for row in oldest_rows:
+            self._execute("DELETE FROM audit_events WHERE id = ?", (int(row["id"]),))
+
+    def list_audit_events(self, limit: int = 100) -> list[dict[str, str | int | None]]:
+        safe_limit = max(1, min(int(limit), 1000))
+        rows = self._fetchall(
+            """
+            SELECT
+                id,
+                event_type,
+                outcome,
+                actor_user_id,
+                target_user_id,
+                username,
+                ip_address,
+                details,
+                created_at
+            FROM audit_events
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            (safe_limit,),
+        )
+
+        events: list[dict[str, str | int | None]] = []
+        for row in rows:
+            details_text = row.get("details")
+            details_json: str | None = None
+            if isinstance(details_text, str) and details_text:
+                try:
+                    details_json = json.dumps(json.loads(details_text), ensure_ascii=True, sort_keys=True)
+                except (TypeError, ValueError):
+                    details_json = details_text
+
+            events.append(
+                {
+                    "id": int(row["id"]),
+                    "event_type": str(row["event_type"]),
+                    "outcome": str(row["outcome"]),
+                    "actor_user_id": int(row["actor_user_id"]) if row.get("actor_user_id") is not None else None,
+                    "target_user_id": int(row["target_user_id"]) if row.get("target_user_id") is not None else None,
+                    "username": str(row["username"]) if row.get("username") else None,
+                    "ip_address": str(row["ip_address"]) if row.get("ip_address") else None,
+                    "details": details_json,
+                    "created_at": str(row["created_at"]),
+                }
+            )
+        return events

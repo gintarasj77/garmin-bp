@@ -44,6 +44,7 @@ class AuthSecurityTests(unittest.TestCase):
         self._reset_store()
 
     def _reset_store(self):
+        self.store._execute("DELETE FROM audit_events")
         self.store._execute("DELETE FROM login_throttle")
         self.store._execute("DELETE FROM password_reset_tokens")
         self.store._execute("DELETE FROM user_credentials")
@@ -88,6 +89,12 @@ class AuthSecurityTests(unittest.TestCase):
             },
             follow_redirects=False,
         )
+
+    def _user_id(self, username: str) -> int:
+        for user in self.store.list_users():
+            if str(user["username"]) == username:
+                return int(user["id"])
+        raise AssertionError(f"User not found: {username}")
 
     def test_registration_only_for_first_account_by_default(self):
         client = self.app.test_client()
@@ -168,6 +175,10 @@ class AuthSecurityTests(unittest.TestCase):
         self.assertTrue(issued)
         self.assertTrue(token)
 
+        active_session_client = self.app.test_client()
+        active_login = self._login(active_session_client, "tokenuser", "StartPass123!")
+        self.assertEqual(active_login.status_code, 302)
+
         client = self.app.test_client()
         csrf = self._csrf_for_path(client, f"/reset-password/{token}")
 
@@ -196,6 +207,10 @@ class AuthSecurityTests(unittest.TestCase):
         self.assertEqual(reset.status_code, 200)
         self.assertIn("Password reset successful", reset.get_data(as_text=True))
 
+        invalidated = active_session_client.get("/", follow_redirects=False)
+        self.assertEqual(invalidated.status_code, 302)
+        self.assertTrue(invalidated.headers.get("Location", "").endswith("/login"))
+
         old_login_client = self.app.test_client()
         old_login = self._login(old_login_client, "tokenuser", "StartPass123!")
         self.assertEqual(old_login.status_code, 401)
@@ -217,6 +232,15 @@ class AuthSecurityTests(unittest.TestCase):
         )
         self.assertEqual(reused.status_code, 400)
         self.assertIn("already been used", reused.get_data(as_text=True))
+
+        events = self.store.list_audit_events(limit=100)
+        self.assertTrue(
+            any(
+                event.get("event_type") == "auth.password_reset.success"
+                and event.get("username") == "tokenuser"
+                for event in events
+            )
+        )
 
     def test_admin_page_access_control(self):
         created_admin, message_admin = self.store.create_user("adminone", "AdminPass123!")
@@ -246,6 +270,10 @@ class AuthSecurityTests(unittest.TestCase):
         login = self._login(client, "changepass", "OldPassword123!")
         self.assertEqual(login.status_code, 302)
 
+        other_client = self.app.test_client()
+        other_login = self._login(other_client, "changepass", "OldPassword123!")
+        self.assertEqual(other_login.status_code, 302)
+
         csrf = self._account_csrf(client)
         wrong_current = client.post(
             "/account/password",
@@ -272,7 +300,15 @@ class AuthSecurityTests(unittest.TestCase):
             follow_redirects=False,
         )
         self.assertEqual(changed.status_code, 200)
-        self.assertIn("Password updated successfully", changed.get_data(as_text=True))
+        self.assertIn("Please sign in again", changed.get_data(as_text=True))
+
+        current_session_after_change = client.get("/", follow_redirects=False)
+        self.assertEqual(current_session_after_change.status_code, 302)
+        self.assertTrue(current_session_after_change.headers.get("Location", "").endswith("/login"))
+
+        other_session_after_change = other_client.get("/", follow_redirects=False)
+        self.assertEqual(other_session_after_change.status_code, 302)
+        self.assertTrue(other_session_after_change.headers.get("Location", "").endswith("/login"))
 
         old_login_client = self.app.test_client()
         old_login = self._login(old_login_client, "changepass", "OldPassword123!")
@@ -281,6 +317,47 @@ class AuthSecurityTests(unittest.TestCase):
         new_login_client = self.app.test_client()
         new_login = self._login(new_login_client, "changepass", "NewPassword123!")
         self.assertEqual(new_login.status_code, 302)
+
+        events = self.store.list_audit_events(limit=100)
+        self.assertTrue(
+            any(
+                event.get("event_type") == "auth.password_change.success"
+                and event.get("username") == "changepass"
+                for event in events
+            )
+        )
+
+    def test_admin_actions_are_audited(self):
+        created_admin, msg_admin = self.store.create_user("adminaudit", "AdminAudit123!")
+        self.assertTrue(created_admin, msg_admin)
+        created_user, msg_user = self.store.create_user("memberaudit", "MemberAudit123!")
+        self.assertTrue(created_user, msg_user)
+
+        admin_id = self._user_id("adminaudit")
+        member_id = self._user_id("memberaudit")
+
+        client = self.app.test_client()
+        login = self._login(client, "adminaudit", "AdminAudit123!")
+        self.assertEqual(login.status_code, 302)
+
+        csrf = self._csrf_for_path(client, "/admin/users")
+        disable = client.post(
+            f"/admin/users/{member_id}/disable",
+            data={"csrf_token": csrf},
+            follow_redirects=False,
+        )
+        self.assertEqual(disable.status_code, 302)
+
+        events = self.store.list_audit_events(limit=100)
+        self.assertTrue(
+            any(
+                event.get("event_type") == "admin.user.disable"
+                and event.get("outcome") == "success"
+                and event.get("actor_user_id") == admin_id
+                and event.get("target_user_id") == member_id
+                for event in events
+            )
+        )
 
     def test_account_delete_flow(self):
         created, message = self.store.create_user("deleteuser", "DeletePass123!")
