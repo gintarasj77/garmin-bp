@@ -83,6 +83,8 @@ class SecureStore:
         login_max_attempts: int = 5,
         login_window_seconds: int = 900,
         login_lockout_seconds: int = 900,
+        throttle_retention_seconds: int = 604_800,
+        throttle_max_rows: int = 50_000,
     ):
         self._backend = "postgres" if database_url else "sqlite"
         self._integrity_error = sqlite3.IntegrityError
@@ -92,6 +94,8 @@ class SecureStore:
         self.login_max_attempts = max(1, int(login_max_attempts))
         self.login_window_seconds = max(60, int(login_window_seconds))
         self.login_lockout_seconds = max(60, int(login_lockout_seconds))
+        self.throttle_retention_seconds = max(3600, int(throttle_retention_seconds))
+        self.throttle_max_rows = max(1000, int(throttle_max_rows))
 
         if database_url:
             normalized = self._normalize_database_url(database_url)
@@ -541,7 +545,47 @@ class SecureStore:
             ),
         )
 
+    def prune_login_throttle(self) -> None:
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat(timespec="seconds")
+        retention_cutoff = (now - timedelta(seconds=self.throttle_retention_seconds)).isoformat(
+            timespec="seconds"
+        )
+
+        self._execute(
+            """
+            DELETE FROM login_throttle
+            WHERE updated_at < ?
+              AND (locked_until IS NULL OR locked_until < ?)
+            """,
+            (retention_cutoff, now_iso),
+        )
+
+        count_row = self._fetchone("SELECT COUNT(*) AS count FROM login_throttle")
+        current_count = int(count_row["count"]) if count_row else 0
+        overflow = current_count - self.throttle_max_rows
+        if overflow <= 0:
+            return
+
+        oldest_rows = self._fetchall(
+            """
+            SELECT scope, key_value
+            FROM login_throttle
+            ORDER BY updated_at ASC
+            LIMIT ?
+            """,
+            (overflow,),
+        )
+        for row in oldest_rows:
+            self._execute(
+                "DELETE FROM login_throttle WHERE scope = ? AND key_value = ?",
+                (str(row["scope"]), str(row["key_value"])),
+            )
+
     def get_login_lockout_seconds(self, username: str, client_ip: str) -> int:
+        if secrets.randbelow(100) == 0:
+            self.prune_login_throttle()
+
         now = datetime.now(timezone.utc)
         max_remaining = 0
         for scope, key_value in self._throttle_keys(username, client_ip):
@@ -593,6 +637,10 @@ class SecureStore:
                 first_failed_at=first_failed_at.isoformat(timespec="seconds"),
                 locked_until=locked_until_iso,
             )
+
+        # Run cleanup periodically to bound storage growth under abuse.
+        if secrets.randbelow(20) == 0:
+            self.prune_login_throttle()
 
     def clear_login_failures(self, username: str, client_ip: str) -> None:
         keys = self._throttle_keys(username, client_ip)

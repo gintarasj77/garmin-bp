@@ -12,13 +12,41 @@ from pathlib import Path
 from flask import Flask, abort, g, jsonify, redirect, render_template, request, session, url_for
 from garminconnect import Garmin
 from waitress import serve
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from omronconnect import BPMeasurement, DeviceCategory, OmronClient
 from secure_store import SecureStore
 
 app = Flask(__name__)
 
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+_is_production = _env_flag("PRODUCTION", False) or _env_flag("RENDER", False) or (
+    os.getenv("FLASK_ENV", "").strip().lower() == "production"
+)
+_trust_proxy_count = int(os.getenv("TRUST_PROXY_COUNT", "1" if _env_flag("RENDER", False) else "0"))
+if _trust_proxy_count > 0:
+    app.wsgi_app = ProxyFix(
+        app.wsgi_app,  # type: ignore[assignment]
+        x_for=_trust_proxy_count,
+        x_proto=_trust_proxy_count,
+        x_host=_trust_proxy_count,
+    )
+
 _secret_from_env = os.getenv("FLASK_SECRET_KEY", "").strip()
+_credential_key_from_env = os.getenv("CREDENTIALS_ENCRYPTION_KEY", "").strip()
+
+if _is_production and not _secret_from_env:
+    raise RuntimeError("FLASK_SECRET_KEY must be set in production.")
+if _is_production and not _credential_key_from_env:
+    raise RuntimeError("CREDENTIALS_ENCRYPTION_KEY must be set in production.")
+
 if _secret_from_env:
     app.secret_key = _secret_from_env
 else:
@@ -33,9 +61,8 @@ app.config.update(
 
 
 def _resolve_encryption_key() -> str:
-    configured = os.getenv("CREDENTIALS_ENCRYPTION_KEY", "").strip()
-    if configured:
-        return configured
+    if _credential_key_from_env:
+        return _credential_key_from_env
     digest = hashlib.sha256(f"{app.secret_key}|credential-vault".encode("utf-8")).digest()
     return base64.urlsafe_b64encode(digest).decode("ascii")
 
@@ -45,6 +72,9 @@ _sqlite_path = os.getenv("APP_DB_PATH", str(Path(__file__).resolve().parent / "d
 _login_max_attempts = int(os.getenv("LOGIN_MAX_ATTEMPTS", "5"))
 _login_window_seconds = int(os.getenv("LOGIN_WINDOW_SECONDS", "900"))
 _login_lockout_seconds = int(os.getenv("LOGIN_LOCKOUT_SECONDS", "900"))
+_login_throttle_retention_seconds = int(os.getenv("LOGIN_THROTTLE_RETENTION_SECONDS", "604800"))
+_login_throttle_max_rows = int(os.getenv("LOGIN_THROTTLE_MAX_ROWS", "50000"))
+_hsts_enabled = _env_flag("HSTS_ENABLED", _is_production)
 
 STORE = SecureStore(
     encryption_key=_resolve_encryption_key(),
@@ -53,6 +83,8 @@ STORE = SecureStore(
     login_max_attempts=_login_max_attempts,
     login_window_seconds=_login_window_seconds,
     login_lockout_seconds=_login_lockout_seconds,
+    throttle_retention_seconds=_login_throttle_retention_seconds,
+    throttle_max_rows=_login_throttle_max_rows,
 )
 
 if _database_url:
@@ -67,8 +99,11 @@ else:
 if not _secret_from_env:
     app.logger.warning("FLASK_SECRET_KEY is not set. Generated an ephemeral key for this process.")
 
-if not os.getenv("CREDENTIALS_ENCRYPTION_KEY", "").strip():
+if not _credential_key_from_env:
     app.logger.warning("CREDENTIALS_ENCRYPTION_KEY is not set. Deriving encryption key from FLASK_SECRET_KEY.")
+
+if _trust_proxy_count > 0:
+    app.logger.info("ProxyFix enabled with TRUST_PROXY_COUNT=%s", _trust_proxy_count)
 
 
 def _current_user_id() -> int | None:
@@ -102,7 +137,9 @@ def _current_user() -> dict[str, str | int | bool] | None:
 
 
 def _registration_open() -> bool:
-    return True
+    if _env_flag("ALLOW_REGISTRATION", False):
+        return True
+    return STORE.user_count() == 0
 
 
 def _csrf_token() -> str:
@@ -133,6 +170,35 @@ def _csrf_protect():
         abort(403)
 
 
+@app.after_request
+def _set_security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        (
+            "default-src 'self'; "
+            "img-src 'self' data: https://github.githubassets.com https://stripe.com; "
+            "style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "connect-src 'self'; "
+            "font-src 'self' data:; "
+            "object-src 'none'; "
+            "base-uri 'self'; "
+            "frame-ancestors 'none'; "
+            "form-action 'self'"
+        ),
+    )
+
+    if _hsts_enabled and request.is_secure:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+
+    return response
+
+
 def _wants_json_response() -> bool:
     accept_header = request.headers.get("Accept", "").lower()
     return request.path.startswith("/api/") or "application/json" in accept_header
@@ -151,9 +217,6 @@ def _forbidden_response(message: str):
 
 
 def _client_ip() -> str:
-    forwarded = request.headers.get("X-Forwarded-For", "").strip()
-    if forwarded:
-        return forwarded.split(",", 1)[0].strip()
     return (request.remote_addr or "").strip()
 
 

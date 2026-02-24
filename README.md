@@ -15,6 +15,7 @@ Flask web app to sync OMRON Connect blood pressure readings to Garmin Connect.
 - Sync credentials are decrypted only at request time for sync operations
 - Session uses secure cookie settings (`HttpOnly`, `SameSite=Lax`)
 - CSRF protection is enforced for write operations (`POST/PUT/PATCH/DELETE`)
+- Security response headers are set (CSP, frame deny, content-type nosniff, referrer policy, permissions policy, HSTS on HTTPS)
 - Brute-force protection is enabled for login (rate limit + temporary lockout)
 - Admin page supports listing users and disabling/deleting accounts
 - Users can change their own password from the account page
@@ -27,6 +28,7 @@ Flask web app to sync OMRON Connect blood pressure readings to Garmin Connect.
   - Fernet key used to encrypt stored OMRON/Garmin credentials
   - Generate with:
     - `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
+- In production, app startup fails fast if either key is missing.
 
 ## Optional environment variables
 
@@ -47,6 +49,18 @@ Flask web app to sync OMRON Connect blood pressure readings to Garmin Connect.
   - Rolling window for failed attempts (default `900`)
 - `LOGIN_LOCKOUT_SECONDS`:
   - Temporary lockout duration when limit is reached (default `900`)
+- `LOGIN_THROTTLE_RETENTION_SECONDS`:
+  - Retain login throttle records for this many seconds before cleanup (default `604800`)
+- `LOGIN_THROTTLE_MAX_ROWS`:
+  - Hard cap target for `login_throttle` table size (default `50000`)
+- `ALLOW_REGISTRATION`:
+  - `0` (default): only first account can self-register; after that public signup closes
+  - `1`: keep public registration enabled
+- `TRUST_PROXY_COUNT`:
+  - Number of trusted proxy hops for `X-Forwarded-*` processing via Werkzeug `ProxyFix`
+  - Default: `1` on Render, otherwise `0`
+- `HSTS_ENABLED`:
+  - `1` in production by default; set `0` to disable `Strict-Transport-Security`
 
 ## Local run
 
@@ -83,6 +97,7 @@ The app includes a `Procfile` for start-command autodetection.
 
 1. Open the app and create the first account.
 2. Sign in with that account.
+3. If you want open self-signup for more users, set `ALLOW_REGISTRATION=1`.
 
 ## Usage
 
