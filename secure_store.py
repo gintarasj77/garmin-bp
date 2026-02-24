@@ -401,6 +401,32 @@ class SecureStore:
         self.clear_login_failures(username, "")
         return True, ""
 
+    def delete_own_account(self, user_id: int, current_password: str) -> tuple[bool, str]:
+        row = self._fetchone(
+            "SELECT username, password_hash, is_admin FROM users WHERE id = ?",
+            (user_id,),
+        )
+        if not row:
+            return False, "User not found."
+
+        current_hash = str(row["password_hash"])
+        if not _verify_password(current_password, current_hash):
+            return False, "Current password is incorrect."
+
+        if _to_bool(row.get("is_admin")) and self._admin_count() <= 1:
+            others_row = self._fetchone(
+                "SELECT COUNT(*) AS count FROM users WHERE id <> ?",
+                (user_id,),
+            )
+            other_users = int(others_row["count"]) if others_row else 0
+            if other_users > 0:
+                return False, "Cannot delete the last admin while other users exist."
+
+        username = str(row["username"])
+        self._execute("DELETE FROM users WHERE id = ?", (user_id,))
+        self.clear_login_failures(username, "")
+        return True, ""
+
     def list_users(self) -> list[dict[str, str | int | bool]]:
         rows = self._fetchall(
             """

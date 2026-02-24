@@ -430,6 +430,33 @@ def change_password_action():
     return _render_account_page(success="Password updated successfully.")
 
 
+@app.route("/account/delete", methods=["POST"])
+@login_required
+def delete_account_action():
+    user = _current_user()
+    if user is None:
+        return _auth_required_response()
+
+    current_password = request.form.get("delete_current_password", "")
+    confirmation = request.form.get("delete_confirmation", "").strip().upper()
+
+    if not current_password:
+        return _render_account_page(error="Current password is required to delete account.", status_code=400)
+    if confirmation != "DELETE":
+        return _render_account_page(error='Type "DELETE" to confirm account deletion.', status_code=400)
+
+    deleted, message = STORE.delete_own_account(int(user["id"]), current_password)
+    if not deleted:
+        return _render_account_page(error=message, status_code=400)
+
+    session.clear()
+    return render_template(
+        "login.html",
+        error="Account deleted.",
+        registration_open=_registration_open(),
+    )
+
+
 @app.route("/admin/users", methods=["GET"])
 @admin_required
 def admin_users_page():

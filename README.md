@@ -107,7 +107,8 @@ The app includes a `Procfile` for start-command autodetection.
 4. Click "Sync from OMRON to Garmin".
 5. Use "Disconnect" on each provider section to revoke and clear saved credentials.
 6. Open `Account` to change your app password.
-7. If you are admin, open `Admin` to disable/delete user accounts.
+7. Open `Account` to delete your own account (requires password + `DELETE` confirmation).
+8. If you are admin, open `Admin` to disable/delete user accounts.
 
 ## Notes
 

@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Account Settings - Omron to Garmin Sync</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%230f172a'/><circle cx='50' cy='50' r='40' fill='none' stroke='%2338bdf8' stroke-width='3'/><circle cx='50' cy='50' r='30' fill='%2338bdf8' opacity='0.1'/><path d='M 50 25 L 65 50 L 50 75 L 35 50 Z' fill='%2338bdf8'/></svg>" />
   <style>
     :root {
       color-scheme: dark;
@@ -127,6 +128,16 @@
       box-shadow: var(--elev-2);
     }
 
+    .btn-danger {
+      width: 100%;
+      margin-top: 4px;
+      background: color-mix(in srgb, var(--error) 24%, var(--surface-high));
+      color: #ffd8de;
+      border-color: color-mix(in srgb, var(--error) 56%, transparent);
+      min-height: 42px;
+      font-size: 0.92rem;
+    }
+
     .btn-link:hover,
     .btn-secondary:hover,
     .btn-primary:hover {
@@ -140,6 +151,10 @@
 
     .btn-primary:hover {
       background: color-mix(in srgb, var(--primary) 92%, #ffffff 8%);
+    }
+
+    .btn-danger:hover {
+      background: color-mix(in srgb, var(--error) 34%, var(--surface-high));
     }
 
     .btn-link:focus-visible,
@@ -194,7 +209,8 @@
       font-weight: 560;
     }
 
-    input[type="password"] {
+    input[type="password"],
+    input[type="text"] {
       width: 100%;
       border: 1px solid rgba(90, 104, 123, 0.75);
       border-radius: 12px;
@@ -216,6 +232,10 @@
       font-size: 0.82rem;
       line-height: 1.4;
       padding-left: 2px;
+    }
+
+    .support.warning {
+      color: #ffc4ce;
     }
 
     @media (max-width: 640px) {
@@ -269,6 +289,25 @@
 
           <div class="support">Use at least 10 characters. Long passphrases are recommended.</div>
           <button class="btn-primary" type="submit">Update password</button>
+        </form>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Delete account</div>
+        <form class="password-form" action="/account/delete" method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+
+          <label for="delete_current_password">Current password</label>
+          <input id="delete_current_password" name="delete_current_password" type="password" required autocomplete="current-password" />
+
+          <label for="delete_confirmation">Type DELETE to confirm</label>
+          <input id="delete_confirmation" name="delete_confirmation" type="text" required autocomplete="off" />
+
+          <div class="support warning">
+            This permanently deletes your app account and encrypted saved credentials.
+            If you are the last admin while other users exist, deletion is blocked.
+          </div>
+          <button class="btn-danger" type="submit">Delete my account</button>
         </form>
       </div>
     </div>
