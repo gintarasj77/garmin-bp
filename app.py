@@ -40,10 +40,23 @@ def _resolve_encryption_key() -> str:
     return base64.urlsafe_b64encode(digest).decode("ascii")
 
 
+_database_url = os.getenv("DATABASE_URL", "").strip()
+_sqlite_path = os.getenv("APP_DB_PATH", str(Path(__file__).resolve().parent / "data" / "app.db"))
+
 STORE = SecureStore(
-    db_path=os.getenv("APP_DB_PATH", str(Path(__file__).resolve().parent / "data" / "app.db")),
     encryption_key=_resolve_encryption_key(),
+    db_path=_sqlite_path if not _database_url else None,
+    database_url=_database_url or None,
 )
+
+if _database_url:
+    app.logger.info("Credential store backend: PostgreSQL (DATABASE_URL).")
+else:
+    app.logger.info("Credential store backend: SQLite (%s).", _sqlite_path)
+    app.logger.warning(
+        "SQLite on ephemeral filesystems may lose accounts/credentials after redeploy. "
+        "Set DATABASE_URL for persistent storage."
+    )
 
 if not _secret_from_env:
     app.logger.warning("FLASK_SECRET_KEY is not set. Generated an ephemeral key for this process.")

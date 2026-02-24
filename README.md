@@ -5,7 +5,7 @@ Flask web app to sync OMRON Connect blood pressure readings to Garmin Connect.
 ## Requirements
 
 - Python 3.11+ (project uses `enum.StrEnum`)
-- Dependencies in `requirements.txt` (includes `cryptography` for encrypted credential vault)
+- Dependencies in `requirements.txt` (includes `cryptography` + `psycopg` for encrypted credential vault storage)
 
 ## Security model
 
@@ -31,8 +31,12 @@ Flask web app to sync OMRON Connect blood pressure readings to Garmin Connect.
   - Set `0` for local HTTP testing
 - `SESSION_LIFETIME_HOURS`:
   - Session lifetime in hours (default `12`)
+- `DATABASE_URL`:
+  - PostgreSQL connection string (recommended for Render free and production)
+  - Example: `postgresql://user:pass@host:5432/dbname?sslmode=require`
 - `APP_DB_PATH`:
   - SQLite database path (default `data/app.db`)
+  - Used only when `DATABASE_URL` is not set
 
 ## Local run
 
@@ -58,6 +62,7 @@ By default, app binds to `127.0.0.1`. For LAN/public exposure:
    - `FLASK_SECRET_KEY`
    - `CREDENTIALS_ENCRYPTION_KEY`
    - `SESSION_COOKIE_SECURE=1`
+   - `DATABASE_URL=<your-postgres-connection-string>`
 4. Use:
    - Build command: `pip install -r requirements.txt`
    - Start command: `python app.py --host 0.0.0.0 --port $PORT`
@@ -80,5 +85,6 @@ The app includes a `Procfile` for start-command autodetection.
 ## Notes
 
 - Stored credentials are per app user account.
+- Prefer `DATABASE_URL` for persistent storage on Render free (ephemeral filesystem can lose SQLite data on redeploy).
 - If `CREDENTIALS_ENCRYPTION_KEY` changes, previously saved credentials cannot be decrypted.
 - Use HTTPS in production.
