@@ -10,6 +10,7 @@ from typing import Any, Mapping
 from cryptography.fernet import Fernet, InvalidToken
 
 PBKDF2_ITERATIONS = 600_000
+PASSWORD_RESET_TOKEN_BYTES = 32
 
 
 def _normalize_username(username: str) -> str:
@@ -50,6 +51,10 @@ def _derive_fernet_key(raw: str) -> bytes:
 
     digest = hashlib.sha256(raw_bytes).digest()
     return base64.urlsafe_b64encode(digest)
+
+
+def _hash_reset_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def _parse_iso_datetime(value: str | None) -> datetime | None:
@@ -227,6 +232,19 @@ class SecureStore:
                     )
                     """
                 )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        token_hash TEXT UNIQUE NOT NULL,
+                        expires_at TEXT NOT NULL,
+                        used_at TEXT,
+                        created_at TEXT NOT NULL,
+                        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                    )
+                    """
+                )
             else:
                 conn.execute(
                     """
@@ -264,6 +282,19 @@ class SecureStore:
                         locked_until TEXT,
                         updated_at TEXT NOT NULL,
                         PRIMARY KEY (scope, key_value)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                        id BIGSERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        token_hash TEXT UNIQUE NOT NULL,
+                        expires_at TEXT NOT NULL,
+                        used_at TEXT,
+                        created_at TEXT NOT NULL,
+                        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
                     )
                     """
                 )
@@ -426,6 +457,144 @@ class SecureStore:
         self._execute("DELETE FROM users WHERE id = ?", (user_id,))
         self.clear_login_failures(username, "")
         return True, ""
+
+    def create_password_reset_token(
+        self,
+        username: str,
+        ttl_seconds: int = 3600,
+    ) -> tuple[bool, str, str]:
+        username_normalized = _normalize_username(username)
+        if not username_normalized:
+            return False, "", ""
+
+        user_row = self._fetchone(
+            "SELECT id, username, is_active FROM users WHERE username = ?",
+            (username_normalized,),
+        )
+        if not user_row:
+            return False, "", ""
+        if not _to_bool(user_row.get("is_active")):
+            return False, "", ""
+
+        token = secrets.token_urlsafe(PASSWORD_RESET_TOKEN_BYTES)
+        token_hash = _hash_reset_token(token)
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat(timespec="seconds")
+        ttl = max(300, int(ttl_seconds))
+        expires_at = (now + timedelta(seconds=ttl)).isoformat(timespec="seconds")
+        user_id = int(user_row["id"])
+
+        # Invalidate older outstanding reset tokens for this user.
+        self._execute(
+            """
+            UPDATE password_reset_tokens
+            SET used_at = ?
+            WHERE user_id = ? AND used_at IS NULL
+            """,
+            (now_iso, user_id),
+        )
+
+        self._execute(
+            """
+            INSERT INTO password_reset_tokens (
+                user_id,
+                token_hash,
+                expires_at,
+                used_at,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (user_id, token_hash, expires_at, None, now_iso),
+        )
+
+        return True, str(user_row["username"]), token
+
+    def validate_password_reset_token(self, token: str) -> tuple[bool, str]:
+        token_hash = _hash_reset_token(token.strip())
+        row = self._fetchone(
+            """
+            SELECT id, user_id, expires_at, used_at
+            FROM password_reset_tokens
+            WHERE token_hash = ?
+            """,
+            (token_hash,),
+        )
+        if not row:
+            return False, "Invalid reset link."
+        if row.get("used_at"):
+            return False, "This reset link has already been used."
+
+        expires_at = _parse_iso_datetime(str(row["expires_at"]))
+        if not expires_at or expires_at <= datetime.now(timezone.utc):
+            return False, "This reset link has expired."
+
+        user = self._fetchone("SELECT is_active FROM users WHERE id = ?", (int(row["user_id"]),))
+        if not user or not _to_bool(user.get("is_active")):
+            return False, "Reset is not available for this account."
+        return True, ""
+
+    def consume_password_reset_token(self, token: str, new_password: str) -> tuple[bool, str]:
+        if len(new_password) < 10:
+            return False, "New password must be at least 10 characters."
+
+        token_hash = _hash_reset_token(token.strip())
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat(timespec="seconds")
+
+        with self._connect() as conn:
+            token_row = conn.execute(
+                self._adapt_query(
+                    """
+                    SELECT id, user_id, expires_at, used_at
+                    FROM password_reset_tokens
+                    WHERE token_hash = ?
+                    """
+                ),
+                (token_hash,),
+            ).fetchone()
+
+            if token_row is None:
+                return False, "Invalid reset link."
+
+            token_data = dict(token_row) if isinstance(token_row, sqlite3.Row) else token_row
+            if token_data.get("used_at"):
+                return False, "This reset link has already been used."
+
+            expires_at = _parse_iso_datetime(str(token_data["expires_at"]))
+            if not expires_at or expires_at <= now:
+                return False, "This reset link has expired."
+
+            user_id = int(token_data["user_id"])
+            user_row = conn.execute(
+                self._adapt_query("SELECT username, is_active FROM users WHERE id = ?"),
+                (user_id,),
+            ).fetchone()
+            if user_row is None:
+                return False, "User not found."
+
+            user_data = dict(user_row) if isinstance(user_row, sqlite3.Row) else user_row
+            if not _to_bool(user_data.get("is_active")):
+                return False, "Reset is not available for this account."
+
+            conn.execute(
+                self._adapt_query("UPDATE users SET password_hash = ? WHERE id = ?"),
+                (_hash_password(new_password), user_id),
+            )
+            conn.execute(
+                self._adapt_query(
+                    """
+                    UPDATE password_reset_tokens
+                    SET used_at = ?
+                    WHERE user_id = ? AND used_at IS NULL
+                    """
+                ),
+                (now_iso, user_id),
+            )
+            conn.commit()
+
+            self.clear_login_failures(str(user_data["username"]), "")
+            return True, ""
 
     def list_users(self) -> list[dict[str, str | int | bool]]:
         rows = self._fetchall(

@@ -17,6 +17,7 @@ Flask web app to sync OMRON Connect blood pressure readings to Garmin Connect.
 - CSRF protection is enforced for write operations (`POST/PUT/PATCH/DELETE`)
 - Security response headers are set (CSP, frame deny, content-type nosniff, referrer policy, permissions policy, HSTS on HTTPS)
 - Brute-force protection is enabled for login (rate limit + temporary lockout)
+- Forgot-password flow uses one-time expiring reset tokens (email delivery)
 - Admin page supports listing users and disabling/deleting accounts
 - Users can change their own password from the account page
 
@@ -61,6 +62,16 @@ Flask web app to sync OMRON Connect blood pressure readings to Garmin Connect.
   - Default: `1` on Render, otherwise `0`
 - `HSTS_ENABLED`:
   - `1` in production by default; set `0` to disable `Strict-Transport-Security`
+- `PASSWORD_RESET_TOKEN_TTL_SECONDS`:
+  - Password reset token lifetime in seconds (default `3600`)
+- `APP_BASE_URL`:
+  - Public app base URL used in reset email links (for example, `https://your-app.onrender.com`)
+- `SMTP_HOST` / `SMTP_PORT` / `SMTP_USE_TLS`:
+  - SMTP server settings for password reset emails
+- `SMTP_USERNAME` / `SMTP_PASSWORD`:
+  - SMTP auth credentials (if required)
+- `SMTP_FROM`:
+  - Sender address for password reset emails
 
 ## Local run
 
@@ -77,6 +88,11 @@ Flask web app to sync OMRON Connect blood pressure readings to Garmin Connect.
 
 By default, app binds to `127.0.0.1`. For LAN/public exposure:
 - `.venv\Scripts\python app.py --host 0.0.0.0 --port 5000`
+
+## Tests
+
+- Run auth/security tests:
+  - `.venv\Scripts\python -m unittest discover -s tests -p "test_*.py" -v`
 
 ## Render deploy
 
@@ -109,6 +125,7 @@ The app includes a `Procfile` for start-command autodetection.
 6. Open `Account` to change your app password.
 7. Open `Account` to delete your own account (requires password + `DELETE` confirmation).
 8. If you are admin, open `Admin` to disable/delete user accounts.
+9. Use `Forgot password?` on sign-in page to request email reset link.
 
 ## Notes
 

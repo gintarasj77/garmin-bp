@@ -9,3 +9,5 @@ __pycache__/
 .DS_Store
 .garmin_tokens/
 data/*.db
+tests/.tmp/
+test_app.db

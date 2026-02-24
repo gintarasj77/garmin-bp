@@ -1,144 +1,11 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Sign In - Omron to Garmin Sync</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%230f172a'/><circle cx='50' cy='50' r='40' fill='none' stroke='%2338bdf8' stroke-width='3'/><circle cx='50' cy='50' r='30' fill='%2338bdf8' opacity='0.1'/><path d='M 50 25 L 65 50 L 50 75 L 35 50 Z' fill='%2338bdf8'/></svg>" />
-  <style>
-    :root {
-      color-scheme: dark;
-      --bg: #0f1318;
-      --surface: #1f2933;
-      --surface-high: #2a3643;
-      --outline: #5a687b;
-      --text: #e3ebf6;
-      --muted: #b0bdce;
-      --primary: #96cbff;
-      --on-primary: #002947;
-      --error: #ff8f9f;
-      --error-bg: rgba(255, 143, 159, 0.14);
-    }
-
-    * {
-      box-sizing: border-box;
-    }
-
-    body {
-      margin: 0;
-      min-height: 100vh;
-      font-family: "Roboto Flex", "Roboto", "Noto Sans", "Segoe UI", sans-serif;
-      color: var(--text);
-      background:
-        radial-gradient(1200px 500px at 15% -10%, rgba(138, 199, 255, 0.2), transparent 60%),
-        radial-gradient(900px 420px at 100% 0%, rgba(95, 189, 136, 0.12), transparent 60%),
-        linear-gradient(180deg, #0d1318 0%, var(--bg) 60%);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 20px 12px;
-    }
-
-    .shell {
-      width: min(460px, 100%);
-      display: grid;
-      gap: 14px;
-    }
-
-    .card {
-      background: linear-gradient(180deg, var(--surface-high), var(--surface));
-      border: 1px solid rgba(90, 104, 123, 0.42);
-      border-radius: 24px;
-      padding: 22px;
-      box-shadow: 0 16px 44px rgba(0, 0, 0, 0.4);
-    }
-
-    h1 {
-      margin: 0;
-      font-size: 1.6rem;
-      font-weight: 620;
-      letter-spacing: 0.01em;
-    }
-
-    .subtitle {
-      margin-top: 8px;
-      color: var(--muted);
-      font-size: 0.92rem;
-      line-height: 1.45;
-    }
-
-    .error {
-      margin-top: 14px;
-      background: var(--error-bg);
-      border: 1px solid rgba(255, 143, 159, 0.38);
-      color: var(--error);
-      border-radius: 12px;
-      padding: 10px 12px;
-      font-size: 0.9rem;
-      font-weight: 600;
-    }
-
-    .section {
-      margin-top: 16px;
-      padding-top: 14px;
-      border-top: 1px solid rgba(90, 104, 123, 0.35);
-    }
-
-    .section-title {
-      margin: 0 0 10px;
-      font-size: 0.86rem;
-      font-weight: 600;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--muted);
-    }
-
-    form {
-      display: grid;
-      gap: 10px;
-    }
-
-    label {
-      font-size: 0.84rem;
-      color: var(--muted);
-      font-weight: 560;
-    }
-
-    input[type="text"],
-    input[type="password"] {
-      width: 100%;
-      border: 1px solid rgba(90, 104, 123, 0.75);
-      border-radius: 12px;
-      background: rgba(33, 43, 54, 0.9);
-      color: var(--text);
-      padding: 11px 13px;
-      font-size: 0.95rem;
-      line-height: 1.25;
-    }
-
-    input:focus-visible {
-      outline: none;
-      border-color: var(--primary);
-      box-shadow: 0 0 0 3px rgba(150, 203, 255, 0.2);
-    }
-
-    button {
-      border: none;
-      border-radius: 999px;
-      min-height: 42px;
-      padding: 0 18px;
-      font-size: 0.93rem;
-      font-weight: 600;
-      cursor: pointer;
-      background: var(--primary);
-      color: var(--on-primary);
-      margin-top: 4px;
-    }
-
-    button:hover {
-      filter: brightness(1.06);
-    }
-  </style>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/login.css') }}" />
 </head>
 <body>
   <div class="shell">
@@ -162,6 +29,7 @@
           <input id="password" name="password" type="password" required autocomplete="current-password" />
 
           <button type="submit">Sign in</button>
+          <a class="aux-link" href="/forgot-password">Forgot password?</a>
         </form>
       </div>
 
@@ -188,3 +56,4 @@
   </div>
 </body>
 </html>
+

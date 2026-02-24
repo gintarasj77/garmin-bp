@@ -3,9 +3,11 @@ import base64
 import hashlib
 import os
 import secrets
+import smtplib
 
 import pytz
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from functools import wraps
 from pathlib import Path
 
@@ -72,6 +74,7 @@ _sqlite_path = os.getenv("APP_DB_PATH", str(Path(__file__).resolve().parent / "d
 _login_max_attempts = int(os.getenv("LOGIN_MAX_ATTEMPTS", "5"))
 _login_window_seconds = int(os.getenv("LOGIN_WINDOW_SECONDS", "900"))
 _login_lockout_seconds = int(os.getenv("LOGIN_LOCKOUT_SECONDS", "900"))
+_password_reset_ttl_seconds = int(os.getenv("PASSWORD_RESET_TOKEN_TTL_SECONDS", "3600"))
 _login_throttle_retention_seconds = int(os.getenv("LOGIN_THROTTLE_RETENTION_SECONDS", "604800"))
 _login_throttle_max_rows = int(os.getenv("LOGIN_THROTTLE_MAX_ROWS", "50000"))
 _hsts_enabled = _env_flag("HSTS_ENABLED", _is_production)
@@ -230,6 +233,57 @@ def _format_duration(seconds: int) -> str:
     return f"{minutes}m {secs}s"
 
 
+def _app_base_url() -> str:
+    configured = os.getenv("APP_BASE_URL", "").strip().rstrip("/")
+    if configured:
+        return configured
+    return request.url_root.rstrip("/")
+
+
+def _send_password_reset_email(recipient: str, reset_link: str) -> bool:
+    smtp_host = os.getenv("SMTP_HOST", "").strip()
+    smtp_from = os.getenv("SMTP_FROM", "").strip()
+    if not smtp_host or not smtp_from:
+        app.logger.warning("Password reset email not sent: SMTP_HOST/SMTP_FROM not configured.")
+        return False
+    if "@" not in recipient:
+        app.logger.warning("Password reset email not sent: username is not an email address.")
+        return False
+
+    smtp_port_default = "587" if _env_flag("SMTP_USE_TLS", True) else "25"
+    smtp_port = int(os.getenv("SMTP_PORT", smtp_port_default))
+    smtp_timeout = int(os.getenv("SMTP_TIMEOUT_SECONDS", "10"))
+    smtp_username = os.getenv("SMTP_USERNAME", "").strip()
+    smtp_password = os.getenv("SMTP_PASSWORD", "")
+    smtp_use_tls = _env_flag("SMTP_USE_TLS", True)
+
+    ttl_minutes = max(1, _password_reset_ttl_seconds // 60)
+    message = EmailMessage()
+    message["Subject"] = "Omron to Garmin Sync - Password reset"
+    message["From"] = smtp_from
+    message["To"] = recipient
+    message.set_content(
+        (
+            "A password reset was requested for your Omron to Garmin Sync account.\n\n"
+            f"Reset link: {reset_link}\n\n"
+            f"This link expires in about {ttl_minutes} minutes and can be used only once.\n"
+            "If you did not request this, you can ignore this email.\n"
+        )
+    )
+
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=smtp_timeout) as smtp:
+            if smtp_use_tls:
+                smtp.starttls()
+            if smtp_username:
+                smtp.login(smtp_username, smtp_password)
+            smtp.send_message(message)
+        return True
+    except Exception:  # pylint: disable=broad-except
+        app.logger.exception("Password reset email delivery failed.")
+        return False
+
+
 def login_required(func):
     @wraps(func)
     def wrapped(*args, **kwargs):
@@ -258,6 +312,37 @@ def login_page():
     if _current_user() is not None:
         return redirect(url_for("index"))
     return render_template("login.html", error=None, registration_open=_registration_open())
+
+
+@app.route("/forgot-password", methods=["GET"])
+def forgot_password_page():
+    if _current_user() is not None:
+        return redirect(url_for("index"))
+    return render_template("forgot_password.html", error=None, success=None)
+
+
+@app.route("/forgot-password", methods=["POST"])
+def forgot_password_action():
+    if _current_user() is not None:
+        return redirect(url_for("index"))
+
+    username = request.form.get("username", "").strip().lower()
+    if not username:
+        return render_template("forgot_password.html", error="Username is required.", success=None), 400
+
+    created, recipient, token = STORE.create_password_reset_token(
+        username,
+        ttl_seconds=_password_reset_ttl_seconds,
+    )
+    if created:
+        reset_link = f"{_app_base_url()}/reset-password/{token}"
+        _send_password_reset_email(recipient, reset_link)
+
+    return render_template(
+        "forgot_password.html",
+        error=None,
+        success="If an account exists for that username, a password reset link has been sent.",
+    )
 
 
 @app.route("/login", methods=["POST"])
@@ -309,6 +394,54 @@ def login_action():
     session["csrf_token"] = secrets.token_urlsafe(32)
     session.permanent = True
     return redirect(url_for("index"))
+
+
+def _render_reset_password_page(token: str, error: str | None = None, status_code: int = 200):
+    valid, message = STORE.validate_password_reset_token(token)
+    if not valid and not error:
+        error = message
+    return (
+        render_template(
+            "reset_password.html",
+            token=token,
+            valid=valid,
+            error=error,
+            success=None,
+        ),
+        status_code,
+    )
+
+
+@app.route("/reset-password/<token>", methods=["GET"])
+def reset_password_page(token: str):
+    if _current_user() is not None:
+        return redirect(url_for("index"))
+    return _render_reset_password_page(token)
+
+
+@app.route("/reset-password/<token>", methods=["POST"])
+def reset_password_action(token: str):
+    if _current_user() is not None:
+        return redirect(url_for("index"))
+
+    valid, message = STORE.validate_password_reset_token(token)
+    if not valid:
+        return _render_reset_password_page(token, error=message, status_code=400)
+
+    new_password = request.form.get("new_password", "")
+    confirm_password = request.form.get("confirm_password", "")
+    if new_password != confirm_password:
+        return _render_reset_password_page(token, error="Passwords do not match.", status_code=400)
+
+    reset_ok, reset_message = STORE.consume_password_reset_token(token, new_password)
+    if not reset_ok:
+        return _render_reset_password_page(token, error=reset_message, status_code=400)
+
+    return render_template(
+        "login.html",
+        error="Password reset successful. Please sign in.",
+        registration_open=_registration_open(),
+    )
 
 
 @app.route("/register", methods=["POST"])
