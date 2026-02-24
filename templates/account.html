@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Account Settings - Omron to Garmin Sync</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f1318;
+      --surface: #1f2933;
+      --surface-high: #2a3643;
+      --outline: #5a687b;
+      --text: #e3ebf6;
+      --muted: #b0bdce;
+      --primary: #96cbff;
+      --on-primary: #002947;
+      --success: #5ed99a;
+      --success-bg: rgba(94, 217, 154, 0.14);
+      --error: #ff8f9f;
+      --error-bg: rgba(255, 143, 159, 0.14);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Roboto Flex", "Roboto", "Noto Sans", "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(1200px 500px at 15% -10%, rgba(138, 199, 255, 0.2), transparent 60%),
+        radial-gradient(900px 420px at 100% 0%, rgba(95, 189, 136, 0.12), transparent 60%),
+        linear-gradient(180deg, #0d1318 0%, var(--bg) 60%);
+      display: flex;
+      justify-content: center;
+      padding: 22px 12px;
+    }
+
+    .page {
+      width: min(680px, 100%);
+      display: grid;
+      gap: 16px;
+    }
+
+    .card {
+      background: linear-gradient(180deg, var(--surface-high), var(--surface));
+      border: 1px solid rgba(90, 104, 123, 0.45);
+      border-radius: 24px;
+      padding: 22px;
+      box-shadow: 0 16px 44px rgba(0, 0, 0, 0.4);
+    }
+
+    .header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 1.8rem;
+      font-weight: 620;
+      letter-spacing: 0.01em;
+    }
+
+    .subtitle {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 0.92rem;
+      line-height: 1.45;
+    }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .btn-link,
+    button {
+      border: none;
+      border-radius: 999px;
+      min-height: 38px;
+      padding: 0 14px;
+      font-size: 0.88rem;
+      font-weight: 600;
+      line-height: 38px;
+      text-decoration: none;
+      cursor: pointer;
+      transition: filter 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .btn-link,
+    .btn-secondary {
+      background: rgba(150, 203, 255, 0.16);
+      color: var(--primary);
+      border: 1px solid rgba(150, 203, 255, 0.42);
+    }
+
+    .btn-primary {
+      width: 100%;
+      margin-top: 4px;
+      background: var(--primary);
+      color: var(--on-primary);
+      min-height: 42px;
+      font-size: 0.92rem;
+    }
+
+    .btn-link:hover,
+    .btn-secondary:hover,
+    .btn-primary:hover {
+      filter: brightness(1.06);
+    }
+
+    .message {
+      margin-top: 14px;
+      border-radius: 12px;
+      padding: 10px 12px;
+      font-size: 0.9rem;
+      font-weight: 600;
+    }
+
+    .message.error {
+      background: var(--error-bg);
+      border: 1px solid rgba(255, 143, 159, 0.38);
+      color: var(--error);
+    }
+
+    .message.success {
+      background: var(--success-bg);
+      border: 1px solid rgba(94, 217, 154, 0.38);
+      color: var(--success);
+    }
+
+    .section {
+      margin-top: 16px;
+      padding-top: 14px;
+      border-top: 1px solid rgba(90, 104, 123, 0.35);
+    }
+
+    .section-title {
+      margin: 0 0 12px;
+      font-size: 0.86rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    form {
+      display: grid;
+      gap: 10px;
+    }
+
+    label {
+      font-size: 0.84rem;
+      color: var(--muted);
+      font-weight: 560;
+    }
+
+    input[type="password"] {
+      width: 100%;
+      border: 1px solid rgba(90, 104, 123, 0.75);
+      border-radius: 12px;
+      background: rgba(33, 43, 54, 0.9);
+      color: var(--text);
+      padding: 11px 13px;
+      font-size: 0.95rem;
+      line-height: 1.25;
+    }
+
+    input:focus-visible {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(150, 203, 255, 0.2);
+    }
+
+    .support {
+      color: var(--muted);
+      font-size: 0.82rem;
+      line-height: 1.4;
+      padding-left: 2px;
+    }
+
+    @media (max-width: 640px) {
+      .header {
+        flex-direction: column;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="card">
+      <div class="header">
+        <div>
+          <h1>Account settings</h1>
+          <div class="subtitle">Signed in as {{ username }}.</div>
+        </div>
+        <div class="actions">
+          <a class="btn-link" href="/">Back to sync</a>
+          {% if is_admin %}
+          <a class="btn-link" href="/admin/users">Admin users</a>
+          {% endif %}
+          <form action="/logout" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            <button type="submit" class="btn-secondary">Sign out</button>
+          </form>
+        </div>
+      </div>
+
+      {% if error %}
+      <div class="message error">{{ error }}</div>
+      {% endif %}
+
+      {% if success %}
+      <div class="message success">{{ success }}</div>
+      {% endif %}
+
+      <div class="section">
+        <div class="section-title">Change password</div>
+        <form action="/account/password" method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+
+          <label for="current_password">Current password</label>
+          <input id="current_password" name="current_password" type="password" required autocomplete="current-password" />
+
+          <label for="new_password">New password</label>
+          <input id="new_password" name="new_password" type="password" required autocomplete="new-password" />
+
+          <label for="confirm_password">Confirm new password</label>
+          <input id="confirm_password" name="confirm_password" type="password" required autocomplete="new-password" />
+
+          <div class="support">Use at least 10 characters. Long passphrases are recommended.</div>
+          <button class="btn-primary" type="submit">Update password</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

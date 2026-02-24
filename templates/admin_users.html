@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Admin Users - Omron to Garmin Sync</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f1318;
+      --surface: #1f2933;
+      --surface-high: #2a3643;
+      --outline: #5a687b;
+      --text: #e3ebf6;
+      --muted: #b0bdce;
+      --primary: #96cbff;
+      --on-primary: #002947;
+      --success: #5ed99a;
+      --success-bg: rgba(94, 217, 154, 0.14);
+      --error: #ff8f9f;
+      --error-bg: rgba(255, 143, 159, 0.14);
+      --warning: #ffcc7a;
+      --warning-bg: rgba(255, 204, 122, 0.14);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Roboto Flex", "Roboto", "Noto Sans", "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(1200px 500px at 15% -10%, rgba(138, 199, 255, 0.2), transparent 60%),
+        radial-gradient(900px 420px at 100% 0%, rgba(95, 189, 136, 0.12), transparent 60%),
+        linear-gradient(180deg, #0d1318 0%, var(--bg) 60%);
+      display: flex;
+      justify-content: center;
+      padding: 22px 12px;
+    }
+
+    .page {
+      width: min(980px, 100%);
+      display: grid;
+      gap: 16px;
+    }
+
+    .card {
+      background: linear-gradient(180deg, var(--surface-high), var(--surface));
+      border: 1px solid rgba(90, 104, 123, 0.45);
+      border-radius: 24px;
+      padding: 22px;
+      box-shadow: 0 16px 44px rgba(0, 0, 0, 0.4);
+    }
+
+    .header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 1.8rem;
+      font-weight: 620;
+      letter-spacing: 0.01em;
+    }
+
+    .subtitle {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 0.92rem;
+      line-height: 1.45;
+    }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .btn-link,
+    .btn-secondary,
+    .btn-danger,
+    .btn-warning,
+    .btn-inline {
+      border: 1px solid transparent;
+      border-radius: 999px;
+      min-height: 34px;
+      padding: 0 12px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      line-height: 34px;
+      text-decoration: none;
+      cursor: pointer;
+      transition: filter 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(150, 203, 255, 0.16);
+      color: var(--primary);
+      border-color: rgba(150, 203, 255, 0.42);
+    }
+
+    .btn-inline {
+      min-width: 76px;
+    }
+
+    .btn-danger {
+      background: rgba(255, 143, 159, 0.16);
+      color: var(--error);
+      border-color: rgba(255, 143, 159, 0.45);
+    }
+
+    .btn-warning {
+      background: var(--warning-bg);
+      color: var(--warning);
+      border-color: rgba(255, 204, 122, 0.45);
+    }
+
+    .btn-link:hover,
+    .btn-secondary:hover,
+    .btn-danger:hover,
+    .btn-warning:hover,
+    .btn-inline:hover {
+      filter: brightness(1.06);
+    }
+
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      filter: none;
+    }
+
+    .message {
+      margin-top: 14px;
+      border-radius: 12px;
+      padding: 10px 12px;
+      font-size: 0.9rem;
+      font-weight: 600;
+    }
+
+    .message.error {
+      background: var(--error-bg);
+      border: 1px solid rgba(255, 143, 159, 0.38);
+      color: var(--error);
+    }
+
+    .message.success {
+      background: var(--success-bg);
+      border: 1px solid rgba(94, 217, 154, 0.38);
+      color: var(--success);
+    }
+
+    .table-wrap {
+      margin-top: 16px;
+      border: 1px solid rgba(90, 104, 123, 0.35);
+      border-radius: 14px;
+      overflow: hidden;
+      overflow-x: auto;
+      background: rgba(18, 25, 33, 0.45);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 860px;
+    }
+
+    th,
+    td {
+      text-align: left;
+      padding: 11px 12px;
+      border-bottom: 1px solid rgba(90, 104, 123, 0.25);
+      vertical-align: middle;
+      font-size: 0.88rem;
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      font-weight: 620;
+      background: rgba(90, 104, 123, 0.12);
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 3px 10px;
+      font-size: 0.74rem;
+      font-weight: 650;
+      letter-spacing: 0.02em;
+    }
+
+    .badge.role-admin {
+      background: rgba(150, 203, 255, 0.16);
+      color: var(--primary);
+      border: 1px solid rgba(150, 203, 255, 0.42);
+    }
+
+    .badge.role-user {
+      background: rgba(176, 189, 206, 0.14);
+      color: var(--muted);
+      border: 1px solid rgba(176, 189, 206, 0.3);
+    }
+
+    .badge.status-active {
+      background: var(--success-bg);
+      color: var(--success);
+      border: 1px solid rgba(94, 217, 154, 0.35);
+    }
+
+    .badge.status-disabled {
+      background: var(--warning-bg);
+      color: var(--warning);
+      border: 1px solid rgba(255, 204, 122, 0.35);
+    }
+
+    .actions-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .actions-row form {
+      margin: 0;
+    }
+
+    @media (max-width: 640px) {
+      .header {
+        flex-direction: column;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="card">
+      <div class="header">
+        <div>
+          <h1>Admin users</h1>
+          <div class="subtitle">Manage accounts, disable compromised users, and remove unused accounts.</div>
+        </div>
+        <div class="actions">
+          <a class="btn-link" href="/">Back to sync</a>
+          <a class="btn-link" href="/account">Account</a>
+          <form action="/logout" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            <button type="submit" class="btn-secondary">Sign out</button>
+          </form>
+        </div>
+      </div>
+
+      {% if error %}
+      <div class="message error">{{ error }}</div>
+      {% endif %}
+
+      {% if success %}
+      <div class="message success">{{ success }}</div>
+      {% endif %}
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Role</th>
+              <th>Status</th>
+              <th>Saved creds</th>
+              <th>Created</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for user in users %}
+            {% set is_self = user.id == current_user_id %}
+            <tr>
+              <td>{{ user.username }}{% if is_self %} (you){% endif %}</td>
+              <td>
+                {% if user.is_admin %}
+                <span class="badge role-admin">Admin</span>
+                {% else %}
+                <span class="badge role-user">User</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if user.is_active %}
+                <span class="badge status-active">Active</span>
+                {% else %}
+                <span class="badge status-disabled">Disabled</span>
+                {% endif %}
+              </td>
+              <td>{% if user.has_saved_credentials %}Yes{% else %}No{% endif %}</td>
+              <td>{{ user.created_at }}</td>
+              <td>
+                <div class="actions-row">
+                  {% if user.is_active %}
+                  <form method="post" action="/admin/users/{{ user.id }}/disable">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                    <button type="submit" class="btn-inline btn-warning" {% if is_self %}disabled{% endif %}>Disable</button>
+                  </form>
+                  {% else %}
+                  <form method="post" action="/admin/users/{{ user.id }}/enable">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                    <button type="submit" class="btn-inline">Enable</button>
+                  </form>
+                  {% endif %}
+
+                  <form method="post" action="/admin/users/{{ user.id }}/delete" onsubmit="return confirm('Delete this user account? This cannot be undone.');">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                    <button type="submit" class="btn-inline btn-danger" {% if is_self %}disabled{% endif %}>Delete</button>
+                  </form>
+                </div>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

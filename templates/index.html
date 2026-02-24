@@ -94,6 +94,14 @@
       margin-bottom: 16px;
     }
 
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
     h1 {
       margin: 0;
       font-size: 1.85rem;
@@ -114,6 +122,42 @@
       display: flex;
       align-items: center;
       margin: 0;
+    }
+
+    .btn-link {
+      position: relative;
+      overflow: hidden;
+      isolation: isolate;
+      border: none;
+      border-radius: 999px;
+      min-height: 34px;
+      padding: 0 12px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      line-height: 34px;
+      text-decoration: none;
+      cursor: pointer;
+      transition: transform 0.15s ease, box-shadow 0.2s ease, background 0.2s ease, color 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .btn-link::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      background: currentColor;
+      opacity: 0;
+      transition: opacity 0.18s ease;
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    .btn-link:hover::after {
+      opacity: var(--md-state-hover);
     }
 
     form {
@@ -425,6 +469,10 @@
         align-items: flex-start;
       }
 
+      .header-actions {
+        justify-content: flex-start;
+      }
+
       h1 {
         font-size: 1.55rem;
       }
@@ -458,10 +506,16 @@
           <h1>Omron to Garmin Sync</h1>
           <div class="helper-text">Signed in as {{ username }}. Credentials can be remembered in encrypted server storage for one-click sync.</div>
         </div>
-        <form class="logout-form" action="/logout" method="post">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-          <button type="submit" class="btn-secondary btn-inline">Sign out</button>
-        </form>
+        <div class="header-actions">
+          <a class="btn-link btn-secondary btn-inline" href="/account">Account</a>
+          {% if is_admin %}
+          <a class="btn-link btn-secondary btn-inline" href="/admin/users">Admin</a>
+          {% endif %}
+          <form class="logout-form" action="/logout" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            <button type="submit" class="btn-secondary btn-inline">Sign out</button>
+          </form>
+        </div>
       </div>
 
       <form id="convert-form" action="/sync-omron" method="post">

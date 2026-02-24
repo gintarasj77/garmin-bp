@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 
-from flask import Flask, abort, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, abort, g, jsonify, redirect, render_template, request, session, url_for
 from garminconnect import Garmin
 from waitress import serve
 
@@ -42,11 +42,17 @@ def _resolve_encryption_key() -> str:
 
 _database_url = os.getenv("DATABASE_URL", "").strip()
 _sqlite_path = os.getenv("APP_DB_PATH", str(Path(__file__).resolve().parent / "data" / "app.db"))
+_login_max_attempts = int(os.getenv("LOGIN_MAX_ATTEMPTS", "5"))
+_login_window_seconds = int(os.getenv("LOGIN_WINDOW_SECONDS", "900"))
+_login_lockout_seconds = int(os.getenv("LOGIN_LOCKOUT_SECONDS", "900"))
 
 STORE = SecureStore(
     encryption_key=_resolve_encryption_key(),
     db_path=_sqlite_path if not _database_url else None,
     database_url=_database_url or None,
+    login_max_attempts=_login_max_attempts,
+    login_window_seconds=_login_window_seconds,
+    login_lockout_seconds=_login_lockout_seconds,
 )
 
 if _database_url:
@@ -73,6 +79,28 @@ def _current_user_id() -> int | None:
         return None
 
 
+def _current_user() -> dict[str, str | int | bool] | None:
+    if getattr(g, "_current_user_loaded", False):
+        return getattr(g, "current_user", None)
+
+    g._current_user_loaded = True
+    user_id = _current_user_id()
+    if user_id is None:
+        g.current_user = None
+        return None
+
+    user = STORE.get_user_by_id(user_id)
+    if not user or not bool(user.get("is_active")):
+        session.clear()
+        g.current_user = None
+        return None
+
+    session["username"] = str(user["username"])
+    session["is_admin"] = bool(user.get("is_admin"))
+    g.current_user = user
+    return user
+
+
 def _registration_open() -> bool:
     return True
 
@@ -90,6 +118,7 @@ def _inject_globals():
     return {
         "csrf_token": _csrf_token(),
         "session_username": session.get("username", ""),
+        "session_is_admin": bool(session.get("is_admin", False)),
     }
 
 
@@ -104,49 +133,116 @@ def _csrf_protect():
         abort(403)
 
 
+def _wants_json_response() -> bool:
+    accept_header = request.headers.get("Accept", "").lower()
+    return request.path.startswith("/api/") or "application/json" in accept_header
+
+
+def _auth_required_response():
+    if _wants_json_response():
+        return jsonify({"error": "Authentication required."}), 401
+    return redirect(url_for("login_page"))
+
+
+def _forbidden_response(message: str):
+    if _wants_json_response():
+        return jsonify({"error": message}), 403
+    return redirect(url_for("index"))
+
+
+def _client_ip() -> str:
+    forwarded = request.headers.get("X-Forwarded-For", "").strip()
+    if forwarded:
+        return forwarded.split(",", 1)[0].strip()
+    return (request.remote_addr or "").strip()
+
+
+def _format_duration(seconds: int) -> str:
+    remaining = max(1, int(seconds))
+    minutes, secs = divmod(remaining, 60)
+    if minutes == 0:
+        return f"{secs} seconds"
+    if secs == 0:
+        return f"{minutes} minutes"
+    return f"{minutes}m {secs}s"
+
+
 def login_required(func):
     @wraps(func)
     def wrapped(*args, **kwargs):
-        if _current_user_id() is not None:
+        if _current_user() is not None:
             return func(*args, **kwargs)
+        return _auth_required_response()
 
-        accept_header = request.headers.get("Accept", "").lower()
-        wants_json = request.path.startswith("/api/") or "application/json" in accept_header
-        if wants_json:
-            return jsonify({"error": "Authentication required."}), 401
-        return redirect(url_for("login_page"))
+    return wrapped
+
+
+def admin_required(func):
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        user = _current_user()
+        if user is None:
+            return _auth_required_response()
+        if not bool(user.get("is_admin")):
+            return _forbidden_response("Admin access required.")
+        return func(*args, **kwargs)
 
     return wrapped
 
 
 @app.route("/login", methods=["GET"])
 def login_page():
-    if _current_user_id() is not None:
+    if _current_user() is not None:
         return redirect(url_for("index"))
     return render_template("login.html", error=None, registration_open=_registration_open())
 
 
 @app.route("/login", methods=["POST"])
 def login_action():
-    if _current_user_id() is not None:
+    if _current_user() is not None:
         return redirect(url_for("index"))
 
     username = request.form.get("username", "").strip().lower()
     password = request.form.get("password", "")
-    user = STORE.authenticate_user(username, password)
-    if not user:
+    client_ip = _client_ip()
+
+    lockout_seconds = STORE.get_login_lockout_seconds(username, client_ip)
+    if lockout_seconds > 0:
         return (
             render_template(
                 "login.html",
-                error="Invalid username or password.",
+                error=f"Too many failed attempts. Try again in {_format_duration(lockout_seconds)}.",
                 registration_open=_registration_open(),
             ),
-            401,
+            429,
         )
 
+    user = STORE.authenticate_user(username, password)
+    if not user:
+        STORE.record_login_failure(username, client_ip)
+        lockout_after_failure = STORE.get_login_lockout_seconds(username, client_ip)
+        if lockout_after_failure > 0:
+            error_message = (
+                f"Too many failed attempts. Try again in {_format_duration(lockout_after_failure)}."
+            )
+            status_code = 429
+        else:
+            error_message = "Invalid username or password."
+            status_code = 401
+        return (
+            render_template(
+                "login.html",
+                error=error_message,
+                registration_open=_registration_open(),
+            ),
+            status_code,
+        )
+
+    STORE.clear_login_failures(username, client_ip)
     session.clear()
     session["user_id"] = user["id"]
     session["username"] = user["username"]
+    session["is_admin"] = bool(user.get("is_admin"))
     session["csrf_token"] = secrets.token_urlsafe(32)
     session.permanent = True
     return redirect(url_for("index"))
@@ -213,6 +309,7 @@ def register_action():
     session.clear()
     session["user_id"] = user["id"]
     session["username"] = user["username"]
+    session["is_admin"] = bool(user.get("is_admin"))
     session["csrf_token"] = secrets.token_urlsafe(32)
     session.permanent = True
     return redirect(url_for("index"))
@@ -225,13 +322,102 @@ def logout_action():
     return redirect(url_for("login_page"))
 
 
+def _render_account_page(error: str | None = None, success: str | None = None, status_code: int = 200):
+    user = _current_user()
+    if user is None:
+        return _auth_required_response()
+    return (
+        render_template(
+            "account.html",
+            username=str(user["username"]),
+            is_admin=bool(user.get("is_admin")),
+            error=error,
+            success=success,
+        ),
+        status_code,
+    )
+
+
+@app.route("/account", methods=["GET"])
+@login_required
+def account_page():
+    return _render_account_page()
+
+
+@app.route("/account/password", methods=["POST"])
+@login_required
+def change_password_action():
+    user = _current_user()
+    if user is None:
+        return _auth_required_response()
+
+    current_password = request.form.get("current_password", "")
+    new_password = request.form.get("new_password", "")
+    confirm_password = request.form.get("confirm_password", "")
+
+    if not current_password:
+        return _render_account_page(error="Current password is required.", status_code=400)
+    if new_password != confirm_password:
+        return _render_account_page(error="New passwords do not match.", status_code=400)
+
+    changed, message = STORE.change_password(int(user["id"]), current_password, new_password)
+    if not changed:
+        return _render_account_page(error=message, status_code=400)
+
+    return _render_account_page(success="Password updated successfully.")
+
+
+@app.route("/admin/users", methods=["GET"])
+@admin_required
+def admin_users_page():
+    user = _current_user()
+    if user is None:
+        return _auth_required_response()
+
+    return render_template(
+        "admin_users.html",
+        username=str(user["username"]),
+        current_user_id=int(user["id"]),
+        users=STORE.list_users(),
+        error=request.args.get("error", "").strip() or None,
+        success=request.args.get("success", "").strip() or None,
+    )
+
+
+@app.route("/admin/users/<int:target_user_id>/<action>", methods=["POST"])
+@admin_required
+def admin_user_action(target_user_id: int, action: str):
+    user = _current_user()
+    if user is None:
+        return _auth_required_response()
+
+    actor_user_id = int(user["id"])
+    action_clean = action.strip().lower()
+
+    if action_clean == "disable":
+        ok, message = STORE.set_user_active(actor_user_id, target_user_id, False)
+        success_message = "User disabled."
+    elif action_clean == "enable":
+        ok, message = STORE.set_user_active(actor_user_id, target_user_id, True)
+        success_message = "User enabled."
+    elif action_clean == "delete":
+        ok, message = STORE.delete_user(actor_user_id, target_user_id)
+        success_message = "User deleted."
+    else:
+        abort(404)
+
+    if ok:
+        return redirect(url_for("admin_users_page", success=success_message))
+    return redirect(url_for("admin_users_page", error=message))
+
+
 @app.route("/api/credentials", methods=["GET"])
 @login_required
 def credential_status():
-    user_id = _current_user_id()
-    if user_id is None:
+    user = _current_user()
+    if user is None:
         return jsonify({"error": "Authentication required."}), 401
-    return jsonify(STORE.get_status(user_id))
+    return jsonify(STORE.get_status(int(user["id"])))
 
 
 @app.route("/api/credentials/<provider>", methods=["DELETE"])
@@ -240,12 +426,12 @@ def clear_credentials(provider: str):
     if provider not in {"garmin", "omron"}:
         return jsonify({"error": "Unknown provider."}), 404
 
-    user_id = _current_user_id()
-    if user_id is None:
+    user = _current_user()
+    if user is None:
         return jsonify({"error": "Authentication required."}), 401
 
     try:
-        STORE.clear_provider(user_id, provider)
+        STORE.clear_provider(int(user["id"]), provider)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -405,22 +591,24 @@ def get_existing_bp_timestamps(gc: Garmin, readings: list[dict[str, int | dateti
 @app.route('/', methods=['GET'])
 @login_required
 def index():
-    user_id = _current_user_id()
-    if user_id is None:
+    user = _current_user()
+    if user is None:
         return redirect(url_for("login_page"))
     return render_template(
         'index.html',
-        username=session.get("username", ""),
-        credential_status=STORE.get_status(user_id),
+        username=str(user["username"]),
+        is_admin=bool(user.get("is_admin")),
+        credential_status=STORE.get_status(int(user["id"])),
     )
 
 
 @app.route('/sync-omron', methods=['POST'])
 @login_required
 def sync_omron():
-    user_id = _current_user_id()
-    if user_id is None:
+    user = _current_user()
+    if user is None:
         return jsonify({"error": "Authentication required."}), 401
+    user_id = int(user["id"])
 
     saved = STORE.get_credentials_for_sync(user_id)
 
