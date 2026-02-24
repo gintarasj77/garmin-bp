@@ -30,8 +30,10 @@ jobs:
 
       - name: Show PostgreSQL client versions
         run: |
-          pg_dump --version
-          pg_restore --version
+          which pg_dump || true
+          ls -la /usr/lib/postgresql/ || true
+          /usr/lib/postgresql/17/bin/pg_dump --version
+          /usr/lib/postgresql/17/bin/pg_restore --version
 
       - name: Create verified backup
         env:
@@ -41,7 +43,7 @@ jobs:
             echo "Missing required secret: NEON_DATABASE_URL"
             exit 1
           fi
-          python scripts/db_backup.py backup --output-dir backups --prefix neon-backup --database-url "$NEON_DATABASE_URL"
+          python scripts/db_backup.py backup --output-dir backups --prefix neon-backup --database-url "$NEON_DATABASE_URL" --pg-dump-bin /usr/lib/postgresql/17/bin/pg_dump --pg-restore-bin /usr/lib/postgresql/17/bin/pg_restore
 
       - name: Upload backup artifact
         uses: actions/upload-artifact@v4
