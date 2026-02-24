@@ -21,6 +21,8 @@
       --md-primary: #96cbff;
       --md-primary-hover: #b2d9ff;
       --md-on-primary: #002947;
+      --md-primary-container: #2b4a66;
+      --md-on-primary-container: #d3e8ff;
       --md-state-hover: 0.08;
       --md-state-focus: 0.12;
       --md-state-pressed: 0.16;
@@ -29,6 +31,8 @@
       --md-error: #ff8f9f;
       --md-error-bg: rgba(255, 143, 159, 0.14);
       --md-shadow: 0 18px 52px rgba(0, 0, 0, 0.45);
+      --md-elev-1: 0 1px 2px rgba(0, 0, 0, 0.45), 0 3px 10px rgba(0, 0, 0, 0.28);
+      --md-elev-2: 0 4px 14px rgba(0, 0, 0, 0.44), 0 1px 3px rgba(0, 0, 0, 0.36);
     }
 
     * {
@@ -128,20 +132,21 @@
       position: relative;
       overflow: hidden;
       isolation: isolate;
-      border: none;
+      border: 1px solid transparent;
       border-radius: 999px;
-      min-height: 34px;
-      padding: 0 12px;
-      font-size: 0.82rem;
+      min-height: 40px;
+      padding: 0 16px;
+      font-size: 0.88rem;
       font-weight: 600;
       letter-spacing: 0.01em;
-      line-height: 34px;
+      line-height: 40px;
       text-decoration: none;
       cursor: pointer;
       transition: transform 0.15s ease, box-shadow 0.2s ease, background 0.2s ease, color 0.2s ease;
       display: inline-flex;
       align-items: center;
       justify-content: center;
+      box-shadow: var(--md-elev-1);
     }
 
     .btn-link::after {
@@ -160,7 +165,7 @@
       opacity: var(--md-state-hover);
     }
 
-    form {
+    #convert-form {
       display: grid;
       gap: 14px;
     }
@@ -265,15 +270,16 @@
       position: relative;
       overflow: hidden;
       isolation: isolate;
-      border: none;
+      border: 1px solid transparent;
       border-radius: 999px;
-      min-height: 44px;
+      min-height: 42px;
       padding: 0 20px;
       font-size: 0.95rem;
       font-weight: 600;
       letter-spacing: 0.01em;
       cursor: pointer;
       transition: transform 0.15s ease, box-shadow 0.2s ease, background 0.2s ease, color 0.2s ease;
+      box-shadow: var(--md-elev-1);
     }
 
     button::after {
@@ -288,7 +294,8 @@
       z-index: 1;
     }
 
-    button:focus-visible {
+    button:focus-visible,
+    .btn-link:focus-visible {
       outline: none;
       box-shadow: 0 0 0 3px rgba(150, 203, 255, 0.24);
     }
@@ -316,24 +323,25 @@
       opacity: 0;
     }
 
-    button[type="submit"] {
+    #convert-form > button[type="submit"] {
       width: 100%;
       margin-top: 2px;
-      background: var(--md-primary);
+      background: color-mix(in srgb, var(--md-primary) 86%, #ffffff 14%);
       color: var(--md-on-primary);
-      box-shadow: 0 8px 22px rgba(2, 35, 62, 0.4);
+      border-color: color-mix(in srgb, var(--md-primary) 60%, transparent);
+      box-shadow: var(--md-elev-2);
     }
 
-    button[type="submit"]:hover {
+    #convert-form > button[type="submit"]:hover {
       background: var(--md-primary-hover);
       transform: translateY(-1px);
     }
 
-    button[type="submit"]:active {
+    #convert-form > button[type="submit"]:active {
       transform: translateY(0);
     }
 
-    button[type="submit"]:disabled {
+    #convert-form > button[type="submit"]:disabled {
       background: #6d8aa8;
       color: #0d2337;
     }
@@ -361,25 +369,30 @@
     }
 
     .btn-secondary {
-      background: rgba(150, 203, 255, 0.16);
-      background: color-mix(in srgb, var(--md-primary) 16%, transparent);
-      color: var(--md-primary);
-      border: 1px solid rgba(150, 203, 255, 0.42);
-      border: 1px solid color-mix(in srgb, var(--md-primary) 42%, transparent);
+      background: color-mix(in srgb, var(--md-primary) 24%, var(--md-surface-container-high));
+      color: var(--md-on-primary-container);
+      border-color: color-mix(in srgb, var(--md-primary) 52%, transparent);
     }
 
     .btn-secondary:hover {
-      background: rgba(150, 203, 255, 0.24);
-      background: color-mix(in srgb, var(--md-primary) 24%, transparent);
+      background: color-mix(in srgb, var(--md-primary) 34%, var(--md-surface-container-high));
       transform: translateY(-1px);
     }
 
     .btn-inline {
       width: auto;
-      min-height: 34px;
-      padding: 0 12px;
-      font-size: 0.82rem;
+      min-height: 38px;
+      padding: 0 14px;
+      font-size: 0.84rem;
+    }
+
+    .btn-status-action {
       margin-left: auto;
+    }
+
+    .header-actions .logout-form {
+      display: flex;
+      gap: 0;
     }
 
     .success,
@@ -526,7 +539,7 @@
           <div id="garmin-saved" class="connected-status{% if not credential_status.garmin.saved %} hidden{% endif %}">
             <span class="status-dot"></span>
             Encrypted Garmin credentials are saved on server.
-            <button type="button" id="garmin-disconnect" class="btn-secondary btn-inline">Disconnect</button>
+            <button type="button" id="garmin-disconnect" class="btn-secondary btn-inline btn-status-action">Disconnect</button>
           </div>
           <div id="garmin-fields"{% if credential_status.garmin.saved %} class="hidden"{% endif %}>
             <div class="field">
@@ -551,7 +564,7 @@
           <div id="omron-saved" class="connected-status{% if not credential_status.omron.saved %} hidden{% endif %}">
             <span class="status-dot"></span>
             Encrypted OMRON credentials are saved on server.
-            <button type="button" id="omron-disconnect" class="btn-secondary btn-inline">Disconnect</button>
+            <button type="button" id="omron-disconnect" class="btn-secondary btn-inline btn-status-action">Disconnect</button>
           </div>
           <div id="omron-fields"{% if credential_status.omron.saved %} class="hidden"{% endif %}>
             <div class="field">
