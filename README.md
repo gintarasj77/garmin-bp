@@ -2,11 +2,18 @@
 
 Simple Flask web app to sync OMRON Connect blood pressure readings directly to Garmin Connect.
 
+## Requirements
+
+- Python 3.11+ (this project uses `enum.StrEnum`)
+
 ## Features
 
 - Sync OMRON Connect blood pressure readings to Garmin Connect
-- No server-side credential storage (client-only local storage)
-- No data storage - all processing happens in memory
+- No server-side credential storage
+- Passwords are never written to browser storage
+- Optional browser storage only for Garmin email and OMRON email/country
+- No data storage on the server; processing is in memory only
+- No third-party analytics/tracking script in the app page
 
 ## Local run
 
@@ -15,7 +22,10 @@ Simple Flask web app to sync OMRON Connect blood pressure readings directly to G
    - `.venv\Scripts\python -m pip install -r requirements.txt`
 2. Start the app (Waitress, no dev-server warning):
    - `.venv\Scripts\python app.py`
-3. Open http://localhost:5000
+3. Open http://127.0.0.1:5000
+
+By default, the app binds to `127.0.0.1`. For LAN/public exposure, pass an explicit host:
+- `.venv\Scripts\python app.py --host 0.0.0.0 --port 5000`
 
 ## Render deploy
 
@@ -29,15 +39,18 @@ The app uses a `Procfile` so Render can autodetect the start command.
 
 ## Usage
 
-1. Enter your OMRON Connect credentials and country code
-2. Enter your Garmin Connect credentials
-3. Click “Sync from OMRON to Garmin”
-4. Your blood pressure data will appear in Garmin Connect under **Health Stats > Blood Pressure**
+1. Enter your OMRON Connect credentials and country code.
+2. Enter your Garmin Connect credentials.
+3. Click "Sync from OMRON to Garmin".
+4. Your blood pressure data appears in Garmin Connect under **Health Stats > Blood Pressure**.
 
-### Client-only credential storage
+## Credential handling
 
-This app does **not** store credentials on the server. If you choose to save them, they are stored
-in your browser’s local storage on your device. The server receives credentials only for the current
-request.
+This app does **not** store credentials on the server.
 
- 
+If you choose to save values in the browser, only these are stored in `localStorage`:
+- Garmin email
+- OMRON email
+- OMRON country code
+
+Passwords are not stored in `localStorage`; they are sent only for the current sync request.

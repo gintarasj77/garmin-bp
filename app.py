@@ -1,5 +1,4 @@
 import argparse
-import os
 
 import pytz
 from datetime import datetime, timezone
@@ -52,7 +51,9 @@ def sync_to_garmin(
                 notes=None,
             )
         except Exception as exc:  # pylint: disable=broad-except
-            raise ValueError(f"Garmin API error while uploading {dt_local.isoformat(timespec='seconds')}: {exc}") from exc
+            raise ValueError(
+                f"Garmin upload failed for reading at {dt_local.isoformat(timespec='seconds')}."
+            ) from exc
         added += 1
     return added
 
@@ -177,8 +178,9 @@ def sync_omron():
         measurements = load_omron_measurements(email, password, country, days)
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
-    except Exception as exc:  # pylint: disable=broad-except
-        return jsonify({'error': f'OMRON sync failed: {exc}'}), 500
+    except Exception:  # pylint: disable=broad-except
+        app.logger.exception('OMRON sync failed unexpectedly.')
+        return jsonify({'error': 'OMRON sync failed due to an internal server error.'}), 500
 
     readings: list[dict[str, int | datetime]] = []
     for bpm in measurements:
@@ -204,14 +206,15 @@ def sync_omron():
         added = sync_to_garmin(readings, garmin_email, garmin_password, False)
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
-    except Exception as exc:  # pylint: disable=broad-except
-        return jsonify({'error': f'Garmin sync failed: {exc}'}), 500
+    except Exception:  # pylint: disable=broad-except
+        app.logger.exception('Garmin sync failed unexpectedly.')
+        return jsonify({'error': 'Garmin sync failed due to an internal server error.'}), 500
 
     return jsonify({'message': f'Successfully synced {added} readings from OMRON to Garmin Connect.'})
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--host', default='0.0.0.0')
+    parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=5000)
     args = parser.parse_args()
     serve(app, host=args.host, port=args.port)
