@@ -22,6 +22,7 @@ Flask web app to sync OMRON Connect blood pressure readings to Garmin Connect.
 - Users can change their own password from the account page
 - Password change/reset invalidates active sessions
 - Audit trail stores security/admin events (logins, password flows, admin actions)
+- Sync history stores run status, counts, and error reasons with retry support
 
 ## Required environment variables (production)
 
@@ -145,11 +146,12 @@ The app includes a `Procfile` for start-command autodetection.
 3. Optionally check "Save ... credentials encrypted on server" for one-click reuse.
 4. Click "Sync from OMRON to Garmin".
 5. Use "Disconnect" on each provider section to revoke and clear saved credentials.
-6. Open `Account` to change your app password.
-7. Open `Account` to delete your own account (requires password + `DELETE` confirmation).
-8. If you are admin, open `Admin` to disable/delete user accounts.
-9. Admin page shows recent security events (audit trail).
-10. Use `Forgot password?` on sign-in page to request email reset link.
+6. Open `History` to review sync outcomes and retry failed runs.
+7. Open `Account` to change your app password.
+8. Open `Account` to delete your own account (requires password + `DELETE` confirmation).
+9. If you are admin, open `Admin` to disable/delete user accounts.
+10. Admin page shows recent security events (audit trail).
+11. Use `Forgot password?` on sign-in page to request email reset link.
 
 ## Notes
 

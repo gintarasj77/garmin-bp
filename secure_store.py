@@ -256,6 +256,39 @@ class SecureStore:
                 )
                 conn.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS sync_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        trigger_source TEXT NOT NULL,
+                        retry_of_id INTEGER,
+                        status TEXT NOT NULL,
+                        readings_found INTEGER,
+                        readings_uploaded INTEGER,
+                        message TEXT,
+                        error_message TEXT,
+                        save_garmin_requested INTEGER NOT NULL DEFAULT 0,
+                        save_omron_requested INTEGER NOT NULL DEFAULT 0,
+                        started_at TEXT NOT NULL,
+                        completed_at TEXT,
+                        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                        FOREIGN KEY(retry_of_id) REFERENCES sync_history(id) ON DELETE SET NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_sync_history_user_started
+                    ON sync_history(user_id, started_at DESC)
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_sync_history_retry_of
+                    ON sync_history(retry_of_id)
+                    """
+                )
+                conn.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS audit_events (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         event_type TEXT NOT NULL,
@@ -333,6 +366,39 @@ class SecureStore:
                         created_at TEXT NOT NULL,
                         FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
                     )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS sync_history (
+                        id BIGSERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        trigger_source TEXT NOT NULL,
+                        retry_of_id BIGINT,
+                        status TEXT NOT NULL,
+                        readings_found INTEGER,
+                        readings_uploaded INTEGER,
+                        message TEXT,
+                        error_message TEXT,
+                        save_garmin_requested BOOLEAN NOT NULL DEFAULT FALSE,
+                        save_omron_requested BOOLEAN NOT NULL DEFAULT FALSE,
+                        started_at TEXT NOT NULL,
+                        completed_at TEXT,
+                        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                        FOREIGN KEY(retry_of_id) REFERENCES sync_history(id) ON DELETE SET NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_sync_history_user_started
+                    ON sync_history(user_id, started_at DESC)
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_sync_history_retry_of
+                    ON sync_history(retry_of_id)
                     """
                 )
                 conn.execute(
@@ -1192,3 +1258,233 @@ class SecureStore:
                 }
             )
         return events
+
+    def start_sync_history(
+        self,
+        user_id: int,
+        trigger_source: str = "manual",
+        retry_of_id: int | None = None,
+        save_garmin_requested: bool = False,
+        save_omron_requested: bool = False,
+    ) -> int:
+        started_at = self._now_iso()
+        source = (trigger_source or "manual").strip().lower()[:32]
+
+        with self._connect() as conn:
+            if self._is_postgres():
+                row = conn.execute(
+                    self._adapt_query(
+                        """
+                        INSERT INTO sync_history (
+                            user_id,
+                            trigger_source,
+                            retry_of_id,
+                            status,
+                            save_garmin_requested,
+                            save_omron_requested,
+                            started_at,
+                            completed_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        RETURNING id
+                        """
+                    ),
+                    (
+                        user_id,
+                        source,
+                        retry_of_id,
+                        "running",
+                        bool(save_garmin_requested),
+                        bool(save_omron_requested),
+                        started_at,
+                        None,
+                    ),
+                ).fetchone()
+                conn.commit()
+                if row is None:
+                    raise RuntimeError("Failed to create sync history entry.")
+                return int(row["id"])
+
+            cursor = conn.execute(
+                self._adapt_query(
+                    """
+                    INSERT INTO sync_history (
+                        user_id,
+                        trigger_source,
+                        retry_of_id,
+                        status,
+                        save_garmin_requested,
+                        save_omron_requested,
+                        started_at,
+                        completed_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """
+                ),
+                (
+                    user_id,
+                    source,
+                    retry_of_id,
+                    "running",
+                    1 if save_garmin_requested else 0,
+                    1 if save_omron_requested else 0,
+                    started_at,
+                    None,
+                ),
+            )
+            conn.commit()
+            return int(cursor.lastrowid)
+
+    def finish_sync_history(
+        self,
+        history_id: int,
+        status: str,
+        readings_found: int | None = None,
+        readings_uploaded: int | None = None,
+        message: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        completed_at = self._now_iso()
+        status_value = (status or "failed").strip().lower()[:32]
+        self._execute(
+            """
+            UPDATE sync_history
+            SET
+                status = ?,
+                readings_found = ?,
+                readings_uploaded = ?,
+                message = ?,
+                error_message = ?,
+                completed_at = ?
+            WHERE id = ?
+            """,
+            (
+                status_value,
+                readings_found,
+                readings_uploaded,
+                message,
+                error_message,
+                completed_at,
+                history_id,
+            ),
+        )
+
+    def list_sync_history(self, user_id: int, limit: int = 100) -> list[dict[str, str | int | bool | None]]:
+        safe_limit = max(1, min(int(limit), 1000))
+        rows = self._fetchall(
+            """
+            SELECT
+                id,
+                user_id,
+                trigger_source,
+                retry_of_id,
+                status,
+                readings_found,
+                readings_uploaded,
+                message,
+                error_message,
+                save_garmin_requested,
+                save_omron_requested,
+                started_at,
+                completed_at
+            FROM sync_history
+            WHERE user_id = ?
+            ORDER BY started_at DESC, id DESC
+            LIMIT ?
+            """,
+            (user_id, safe_limit),
+        )
+        history: list[dict[str, str | int | bool | None]] = []
+        for row in rows:
+            history.append(
+                {
+                    "id": int(row["id"]),
+                    "user_id": int(row["user_id"]),
+                    "trigger_source": str(row["trigger_source"]),
+                    "retry_of_id": int(row["retry_of_id"]) if row.get("retry_of_id") is not None else None,
+                    "status": str(row["status"]),
+                    "readings_found": (
+                        int(row["readings_found"]) if row.get("readings_found") is not None else None
+                    ),
+                    "readings_uploaded": (
+                        int(row["readings_uploaded"]) if row.get("readings_uploaded") is not None else None
+                    ),
+                    "message": str(row["message"]) if row.get("message") else None,
+                    "error_message": str(row["error_message"]) if row.get("error_message") else None,
+                    "save_garmin_requested": _to_bool(row.get("save_garmin_requested")),
+                    "save_omron_requested": _to_bool(row.get("save_omron_requested")),
+                    "started_at": str(row["started_at"]),
+                    "completed_at": str(row["completed_at"]) if row.get("completed_at") else None,
+                }
+            )
+        return history
+
+    def get_sync_history_entry(
+        self,
+        user_id: int,
+        history_id: int,
+    ) -> dict[str, str | int | bool | None] | None:
+        row = self._fetchone(
+            """
+            SELECT
+                id,
+                user_id,
+                trigger_source,
+                retry_of_id,
+                status,
+                readings_found,
+                readings_uploaded,
+                message,
+                error_message,
+                save_garmin_requested,
+                save_omron_requested,
+                started_at,
+                completed_at
+            FROM sync_history
+            WHERE user_id = ? AND id = ?
+            """,
+            (user_id, history_id),
+        )
+        if not row:
+            return None
+        return {
+            "id": int(row["id"]),
+            "user_id": int(row["user_id"]),
+            "trigger_source": str(row["trigger_source"]),
+            "retry_of_id": int(row["retry_of_id"]) if row.get("retry_of_id") is not None else None,
+            "status": str(row["status"]),
+            "readings_found": int(row["readings_found"]) if row.get("readings_found") is not None else None,
+            "readings_uploaded": (
+                int(row["readings_uploaded"]) if row.get("readings_uploaded") is not None else None
+            ),
+            "message": str(row["message"]) if row.get("message") else None,
+            "error_message": str(row["error_message"]) if row.get("error_message") else None,
+            "save_garmin_requested": _to_bool(row.get("save_garmin_requested")),
+            "save_omron_requested": _to_bool(row.get("save_omron_requested")),
+            "started_at": str(row["started_at"]),
+            "completed_at": str(row["completed_at"]) if row.get("completed_at") else None,
+        }
+
+    def get_sync_history_counts(self, user_id: int) -> dict[str, int]:
+        row = self._fetchone(
+            """
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+                SUM(CASE WHEN status = 'partial' THEN 1 ELSE 0 END) AS partial,
+                SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running
+            FROM sync_history
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        )
+        if not row:
+            return {"total": 0, "success": 0, "failed": 0, "partial": 0, "running": 0}
+        return {
+            "total": int(row.get("total") or 0),
+            "success": int(row.get("success") or 0),
+            "failed": int(row.get("failed") or 0),
+            "partial": int(row.get("partial") or 0),
+            "running": int(row.get("running") or 0),
+        }

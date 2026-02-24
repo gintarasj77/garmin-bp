@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -45,6 +46,7 @@ class AuthSecurityTests(unittest.TestCase):
 
     def _reset_store(self):
         self.store._execute("DELETE FROM audit_events")
+        self.store._execute("DELETE FROM sync_history")
         self.store._execute("DELETE FROM login_throttle")
         self.store._execute("DELETE FROM password_reset_tokens")
         self.store._execute("DELETE FROM user_credentials")
@@ -358,6 +360,146 @@ class AuthSecurityTests(unittest.TestCase):
                 for event in events
             )
         )
+
+    def test_sync_history_records_success_and_counts(self):
+        created, message = self.store.create_user("syncuser", "SyncUserPass123!")
+        self.assertTrue(created, message)
+        user_id = self._user_id("syncuser")
+
+        class FakeMeasurement:
+            def __init__(self, systolic: int, diastolic: int, pulse: int, offset_minutes: int):
+                self.systolic = systolic
+                self.diastolic = diastolic
+                self.pulse = pulse
+                self.timeZone = timezone.utc
+                base = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+                self.measurementDate = int((base.timestamp() + offset_minutes * 60) * 1000)
+
+        original_load = app_module.load_omron_measurements
+        original_sync = app_module.sync_to_garmin
+        app_module.load_omron_measurements = lambda *_args, **_kwargs: [
+            FakeMeasurement(120, 80, 65, 0),
+            FakeMeasurement(122, 82, 66, 5),
+        ]
+        app_module.sync_to_garmin = lambda readings, *_args, **_kwargs: len(readings)
+
+        try:
+            client = self.app.test_client()
+            login = self._login(client, "syncuser", "SyncUserPass123!")
+            self.assertEqual(login.status_code, 302)
+
+            csrf = self._csrf_for_path(client, "/")
+            response = client.post(
+                "/sync-omron",
+                data={
+                    "csrf_token": csrf,
+                    "omron_email": "omron@example.com",
+                    "omron_password": "omron-secret",
+                    "omron_country": "US",
+                    "garmin_email": "garmin@example.com",
+                    "garmin_password": "garmin-secret",
+                    "save_garmin": "on",
+                    "save_omron": "on",
+                },
+                headers={"Accept": "application/json"},
+                follow_redirects=False,
+            )
+        finally:
+            app_module.load_omron_measurements = original_load
+            app_module.sync_to_garmin = original_sync
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json() or {}
+        self.assertIn("history_id", payload)
+
+        history = self.store.list_sync_history(user_id, limit=20)
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0].get("status"), "success")
+        self.assertEqual(history[0].get("readings_found"), 2)
+        self.assertEqual(history[0].get("readings_uploaded"), 2)
+
+        counts = self.store.get_sync_history_counts(user_id)
+        self.assertEqual(counts.get("total"), 1)
+        self.assertEqual(counts.get("success"), 1)
+
+        page = self.app.test_client()
+        login_page = self._login(page, "syncuser", "SyncUserPass123!")
+        self.assertEqual(login_page.status_code, 302)
+        history_page = page.get("/sync-history", follow_redirects=False)
+        self.assertEqual(history_page.status_code, 200)
+        html = history_page.get_data(as_text=True)
+        self.assertIn("Sync history", html)
+        self.assertIn("Successfully synced", html)
+
+    def test_sync_history_retry_creates_retry_entry(self):
+        created, message = self.store.create_user("retrysync", "RetrySyncPass123!")
+        self.assertTrue(created, message)
+        user_id = self._user_id("retrysync")
+
+        class FakeMeasurement:
+            def __init__(self):
+                self.systolic = 118
+                self.diastolic = 79
+                self.pulse = 62
+                self.timeZone = timezone.utc
+                self.measurementDate = int(datetime(2026, 1, 2, 8, 0, tzinfo=timezone.utc).timestamp() * 1000)
+
+        original_load = app_module.load_omron_measurements
+        original_sync = app_module.sync_to_garmin
+
+        call_count = {"value": 0}
+
+        def fake_load(email, password, country, _days):
+            self.assertTrue(email)
+            self.assertTrue(password)
+            self.assertTrue(country)
+            call_count["value"] += 1
+            return [FakeMeasurement()]
+
+        app_module.load_omron_measurements = fake_load
+        app_module.sync_to_garmin = lambda readings, *_args, **_kwargs: len(readings)
+
+        try:
+            client = self.app.test_client()
+            login = self._login(client, "retrysync", "RetrySyncPass123!")
+            self.assertEqual(login.status_code, 302)
+
+            csrf = self._csrf_for_path(client, "/")
+            first_sync = client.post(
+                "/sync-omron",
+                data={
+                    "csrf_token": csrf,
+                    "omron_email": "omron@example.com",
+                    "omron_password": "omron-secret",
+                    "omron_country": "US",
+                    "garmin_email": "garmin@example.com",
+                    "garmin_password": "garmin-secret",
+                    "save_garmin": "on",
+                    "save_omron": "on",
+                },
+                headers={"Accept": "application/json"},
+                follow_redirects=False,
+            )
+            self.assertEqual(first_sync.status_code, 200)
+            first_history_id = int((first_sync.get_json() or {}).get("history_id"))
+
+            csrf = self._csrf_for_path(client, "/sync-history")
+            retry = client.post(
+                f"/sync-history/{first_history_id}/retry",
+                data={"csrf_token": csrf},
+                follow_redirects=False,
+            )
+            self.assertEqual(retry.status_code, 302)
+        finally:
+            app_module.load_omron_measurements = original_load
+            app_module.sync_to_garmin = original_sync
+
+        history = self.store.list_sync_history(user_id, limit=20)
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[0].get("trigger_source"), "retry")
+        self.assertEqual(history[0].get("retry_of_id"), first_history_id)
+        self.assertEqual(history[0].get("status"), "success")
+        self.assertGreaterEqual(call_count["value"], 2)
 
     def test_account_delete_flow(self):
         created, message = self.store.create_user("deleteuser", "DeletePass123!")

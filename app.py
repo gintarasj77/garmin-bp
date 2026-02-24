@@ -1082,28 +1082,89 @@ def index():
     )
 
 
-@app.route('/sync-omron', methods=['POST'])
+@app.route("/sync-history", methods=["GET"])
 @login_required
-def sync_omron():
+def sync_history_page():
     user = _current_user()
     if user is None:
-        return jsonify({"error": "Authentication required."}), 401
+        return _auth_required_response()
+
     user_id = int(user["id"])
+    return render_template(
+        "sync_history.html",
+        username=str(user["username"]),
+        is_admin=bool(user.get("is_admin")),
+        history=STORE.list_sync_history(user_id, limit=100),
+        counts=STORE.get_sync_history_counts(user_id),
+        error=request.args.get("error", "").strip() or None,
+        success=request.args.get("success", "").strip() or None,
+    )
 
+
+def _sync_omron_core(
+    user_id: int,
+    form_data,
+    trigger_source: str = "manual",
+    retry_of_id: int | None = None,
+) -> tuple[dict[str, object], int]:
     saved = STORE.get_credentials_for_sync(user_id)
+    save_garmin = str(form_data.get("save_garmin", "") or "").strip() == "on"
+    save_omron = str(form_data.get("save_omron", "") or "").strip() == "on"
 
-    email = request.form.get('omron_email', '').strip() or saved.get("omron_email", "")
-    password = request.form.get('omron_password', '') or saved.get("omron_password", "")
-    country = request.form.get('omron_country', '').strip().upper() or saved.get("omron_country", "").upper()
+    history_id = STORE.start_sync_history(
+        user_id=user_id,
+        trigger_source=trigger_source,
+        retry_of_id=retry_of_id,
+        save_garmin_requested=save_garmin,
+        save_omron_requested=save_omron,
+    )
+
+    def fail(
+        message: str,
+        status_code: int,
+        status: str = "failed",
+        readings_found: int | None = None,
+        readings_uploaded: int | None = None,
+    ) -> tuple[dict[str, object], int]:
+        STORE.finish_sync_history(
+            history_id=history_id,
+            status=status,
+            readings_found=readings_found,
+            readings_uploaded=readings_uploaded,
+            error_message=message,
+            message=None,
+        )
+        _record_audit_event(
+            "sync.run.failed" if status == "failed" else "sync.run.partial",
+            outcome="failure" if status == "failed" else "warning",
+            actor_user_id=user_id,
+            target_user_id=user_id,
+            details={
+                "source": trigger_source,
+                "history_id": history_id,
+                "retry_of_id": retry_of_id,
+                "status": status,
+                "http_status": status_code,
+                "reason": message,
+            },
+        )
+        return {"error": message, "history_id": history_id}, status_code
+
+    email = str(form_data.get("omron_email", "") or "").strip() or saved.get("omron_email", "")
+    password = str(form_data.get("omron_password", "") or "") or saved.get("omron_password", "")
+    country = (
+        str(form_data.get("omron_country", "") or "").strip().upper()
+        or saved.get("omron_country", "").upper()
+    )
     days = 30
 
     try:
         measurements = load_omron_measurements(email, password, country, days)
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+        return fail(str(exc), 400)
     except Exception:  # pylint: disable=broad-except
         app.logger.exception('OMRON sync failed unexpectedly.')
-        return jsonify({'error': 'OMRON sync failed due to an internal server error.'}), 500
+        return fail('OMRON sync failed due to an internal server error.', 500)
 
     readings: list[dict[str, int | datetime]] = []
     for bpm in measurements:
@@ -1118,23 +1179,30 @@ def sync_omron():
         )
 
     if not readings:
-        return jsonify({'error': 'No OMRON readings found for the selected range.'}), 400
+        return fail('No OMRON readings found for the selected range.', 400, readings_found=0, readings_uploaded=0)
 
-    garmin_email = request.form.get('garmin_email', '').strip() or saved.get("garmin_email", "")
-    garmin_password = request.form.get('garmin_password', '') or saved.get("garmin_password", "")
+    garmin_email = str(form_data.get('garmin_email', '') or '').strip() or saved.get("garmin_email", "")
+    garmin_password = str(form_data.get('garmin_password', '') or '') or saved.get("garmin_password", "")
     if not (garmin_email and garmin_password):
-        return jsonify({'error': 'Garmin credentials required for sync.'}), 400
-
-    save_garmin = request.form.get('save_garmin') == 'on'
-    save_omron = request.form.get('save_omron') == 'on'
+        return fail(
+            'Garmin credentials required for sync.',
+            400,
+            readings_found=len(readings),
+            readings_uploaded=0,
+        )
 
     try:
         added = sync_to_garmin(readings, garmin_email, garmin_password, False)
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+        return fail(str(exc), 400, readings_found=len(readings), readings_uploaded=0)
     except Exception:  # pylint: disable=broad-except
         app.logger.exception('Garmin sync failed unexpectedly.')
-        return jsonify({'error': 'Garmin sync failed due to an internal server error.'}), 500
+        return fail(
+            'Garmin sync failed due to an internal server error.',
+            500,
+            readings_found=len(readings),
+            readings_uploaded=0,
+        )
 
     try:
         if save_garmin and garmin_email and garmin_password:
@@ -1143,17 +1211,90 @@ def sync_omron():
             STORE.save_omron_credentials(user_id, email, password, country)
     except Exception:  # pylint: disable=broad-except
         app.logger.exception("Saving encrypted credentials failed unexpectedly.")
-        return jsonify({'error': 'Sync succeeded but saving credentials failed.'}), 500
+        return fail(
+            'Sync succeeded but saving credentials failed.',
+            500,
+            status="partial",
+            readings_found=len(readings),
+            readings_uploaded=added,
+        )
 
-    return jsonify(
+    message = f'Successfully synced {added} readings from OMRON to Garmin Connect.'
+    STORE.finish_sync_history(
+        history_id=history_id,
+        status="success",
+        readings_found=len(readings),
+        readings_uploaded=added,
+        message=message,
+        error_message=None,
+    )
+    _record_audit_event(
+        "sync.run.success",
+        outcome="success",
+        actor_user_id=user_id,
+        target_user_id=user_id,
+        details={
+            "source": trigger_source,
+            "history_id": history_id,
+            "retry_of_id": retry_of_id,
+            "readings_found": len(readings),
+            "readings_uploaded": added,
+        },
+    )
+    return (
         {
-            'message': f'Successfully synced {added} readings from OMRON to Garmin Connect.',
+            'message': message,
             'saved': {
                 'garmin': save_garmin,
                 'omron': save_omron,
             },
-        }
+            'history_id': history_id,
+        },
+        200,
     )
+
+
+@app.route('/sync-omron', methods=['POST'])
+@login_required
+def sync_omron():
+    user = _current_user()
+    if user is None:
+        return jsonify({"error": "Authentication required."}), 401
+    user_id = int(user["id"])
+    payload, status_code = _sync_omron_core(user_id, request.form, trigger_source="manual")
+    return jsonify(payload), status_code
+
+
+@app.route("/sync-history/<int:history_id>/retry", methods=["POST"])
+@login_required
+def retry_sync_history_action(history_id: int):
+    user = _current_user()
+    if user is None:
+        return _auth_required_response()
+
+    user_id = int(user["id"])
+    entry = STORE.get_sync_history_entry(user_id, history_id)
+    if not entry:
+        abort(404)
+
+    retry_form: dict[str, str] = {}
+    if bool(entry.get("save_garmin_requested")):
+        retry_form["save_garmin"] = "on"
+    if bool(entry.get("save_omron_requested")):
+        retry_form["save_omron"] = "on"
+
+    payload, status_code = _sync_omron_core(
+        user_id,
+        retry_form,
+        trigger_source="retry",
+        retry_of_id=history_id,
+    )
+
+    if status_code == 200:
+        message = str(payload.get("message") or "Retry sync completed.")[:240]
+        return redirect(url_for("sync_history_page", success=message))
+    error_message = str(payload.get("error") or "Retry sync failed.")[:240]
+    return redirect(url_for("sync_history_page", error=error_message))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

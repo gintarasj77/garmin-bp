@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sync History - Omron to Garmin Sync</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%230f172a'/><circle cx='50' cy='50' r='40' fill='none' stroke='%2338bdf8' stroke-width='3'/><circle cx='50' cy='50' r='30' fill='%2338bdf8' opacity='0.1'/><path d='M 50 25 L 65 50 L 50 75 L 35 50 Z' fill='%2338bdf8'/></svg>" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/sync_history.css') }}" />
+</head>
+<body>
+  <div class="page">
+    <div class="card">
+      <div class="header">
+        <div>
+          <h1>Sync history</h1>
+          <div class="subtitle">Track sync outcomes, inspect errors, and retry with one click.</div>
+        </div>
+        <div class="actions">
+          <a class="btn-link" href="/">Back to sync</a>
+          <a class="btn-link" href="/account">Account</a>
+          {% if is_admin %}
+          <a class="btn-link" href="/admin/users">Admin</a>
+          {% endif %}
+          <form action="/logout" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            <button type="submit" class="btn-secondary">Sign out</button>
+          </form>
+        </div>
+      </div>
+
+      {% if error %}
+      <div class="message error">{{ error }}</div>
+      {% endif %}
+      {% if success %}
+      <div class="message success">{{ success }}</div>
+      {% endif %}
+
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-label">Total runs</div>
+          <div class="stat-value">{{ counts.total }}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Success</div>
+          <div class="stat-value success">{{ counts.success }}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Failed</div>
+          <div class="stat-value failed">{{ counts.failed }}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Partial</div>
+          <div class="stat-value partial">{{ counts.partial }}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Running</div>
+          <div class="stat-value running">{{ counts.running }}</div>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Started (UTC)</th>
+              <th>Status</th>
+              <th>Found</th>
+              <th>Uploaded</th>
+              <th>Source</th>
+              <th>Message</th>
+              <th>Retry</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for entry in history %}
+            <tr>
+              <td>{{ entry.started_at }}</td>
+              <td>
+                <span class="badge status-{{ entry.status }}">{{ entry.status }}</span>
+              </td>
+              <td>{{ entry.readings_found if entry.readings_found is not none else '-' }}</td>
+              <td>{{ entry.readings_uploaded if entry.readings_uploaded is not none else '-' }}</td>
+              <td>
+                {{ entry.trigger_source }}
+                {% if entry.retry_of_id is not none %}
+                <span class="subtle">(#{{ entry.retry_of_id }})</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if entry.error_message %}
+                <span class="error-text">{{ entry.error_message }}</span>
+                {% elif entry.message %}
+                {{ entry.message }}
+                {% else %}
+                -
+                {% endif %}
+              </td>
+              <td>
+                <form method="post" action="/sync-history/{{ entry.id }}/retry">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                  <button type="submit" class="btn-inline" {% if entry.status == 'running' %}disabled{% endif %}>Retry</button>
+                </form>
+              </td>
+            </tr>
+            {% else %}
+            <tr>
+              <td colspan="7">No sync runs yet.</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
