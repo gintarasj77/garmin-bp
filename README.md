@@ -94,6 +94,12 @@ By default, app binds to `127.0.0.1`. For LAN/public exposure:
 - Run auth/security tests:
   - `.venv\Scripts\python -m unittest discover -s tests -p "test_*.py" -v`
 
+## CI/CD
+
+- GitHub Actions workflow: `.github/workflows/ci.yml`
+- Runs tests automatically on every `push` and `pull_request`.
+- To block bad merges/deploys, set this workflow as a **required status check** in GitHub branch protection for your main branch.
+
 ## Render deploy
 
 1. Push this folder to a Git repository.
