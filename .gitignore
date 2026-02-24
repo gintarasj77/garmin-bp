@@ -11,3 +11,5 @@ __pycache__/
 data/*.db
 tests/.tmp/
 test_app.db
+backups/
+*.dump

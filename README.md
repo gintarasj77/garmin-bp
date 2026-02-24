@@ -116,6 +116,38 @@ By default, app binds to `127.0.0.1`. For LAN/public exposure:
 - Runs tests automatically on every `push` and `pull_request`.
 - To block bad merges/deploys, set this workflow as a **required status check** in GitHub branch protection for your main branch.
 
+## Database backup and restore (Neon/Postgres)
+
+- Backup script: `scripts/db_backup.py`
+- Scheduled backup workflow: `.github/workflows/db-backup.yml`
+- Backup artifact format: PostgreSQL custom dump (`.dump`)
+
+### One-time GitHub setup
+
+1. Add repository secret:
+   - `NEON_DATABASE_URL=<your-neon-connection-string>`
+2. Open **Actions** and run **Database Backup** once via `workflow_dispatch`.
+3. Confirm artifact upload:
+   - Artifact name pattern: `neon-backup-<run_id>`
+
+### Manual backup command
+
+- `python scripts/db_backup.py backup --database-url "<neon-url>" --output-dir backups --prefix neon-backup`
+
+### Restore command
+
+- `python scripts/db_backup.py restore --input backups/<file>.dump --database-url "<target-db-url>" --force`
+
+### Restore drill (recommended weekly/monthly)
+
+1. Create a temporary Neon branch/database for validation.
+2. Run restore command into that temporary target.
+3. Start app against restored DB and run smoke checks:
+   - Login
+   - Sync history page
+   - Admin users page
+4. Delete temporary branch after validation.
+
 ## Render deploy
 
 1. Push this folder to a Git repository.
@@ -158,4 +190,5 @@ The app includes a `Procfile` for start-command autodetection.
 - Stored credentials are per app user account.
 - Prefer `DATABASE_URL` for persistent storage on Render free (ephemeral filesystem can lose SQLite data on redeploy).
 - If `CREDENTIALS_ENCRYPTION_KEY` changes, previously saved credentials cannot be decrypted.
+- Keep backup artifacts private and rotate `NEON_DATABASE_URL` if exposure is suspected.
 - Use HTTPS in production.
