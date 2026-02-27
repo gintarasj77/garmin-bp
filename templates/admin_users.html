@@ -80,7 +80,12 @@
                   </form>
                   {% endif %}
 
-                  <form method="post" action="/admin/users/{{ user.id }}/delete" onsubmit="return confirm('Delete this user account? This cannot be undone.');">
+                  <form
+                    method="post"
+                    action="/admin/users/{{ user.id }}/delete"
+                    class="js-confirm-delete"
+                    data-confirm="Delete this user account? This cannot be undone."
+                  >
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
                     <button type="submit" class="btn-inline btn-danger" {% if is_self %}disabled{% endif %}>Delete</button>
                   </form>
@@ -129,6 +134,7 @@
       </div>
     </div>
   </div>
+  <script src="{{ url_for('static', filename='js/admin_users.js') }}" defer></script>
 </body>
 </html>
 

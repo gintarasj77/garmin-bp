@@ -15,12 +15,12 @@ from decimal import Decimal
 from typing import get_type_hints
 
 import httpx
-import pytz
 from httpx import HTTPStatusError
 
 import utils as U
 from httpxlogtransport import HttpxLogTransport, transport_set_logger
 from regionserver import get_credentials_for_server, get_servers_for_country_code
+from tz_compat import pytz
 
 ########################################################################################################################
 
@@ -28,6 +28,8 @@ L = logging.getLogger("omronconnect")
 transport_set_logger(L)
 
 _debugSaveResponse = False
+_httpx_gzip_patch_applied = False
+_httpx_json_patch_applied = False
 
 ########################################################################################################################
 # Monkey-patch httpx GZipDecoder to handle OMRON servers that claim gzip but send uncompressed data
@@ -47,6 +49,39 @@ def _patched_gzip_decode(self, data: bytes) -> bytes:
 
         except UnicodeDecodeError:
             raise httpx.DecodingError(str(exc)) from exc
+
+
+def _patched_httpx_json_dumps(obj: T.Any, **kw: T.Any) -> str:
+    return json.dumps(obj, **{**kw, "separators": (",", ":")})
+
+
+def _patch_httpx_gzip_decoder_once() -> None:
+    global _httpx_gzip_patch_applied
+    if _httpx_gzip_patch_applied:
+        return
+
+    decoders_module = getattr(httpx, "_decoders", None)
+    gzip_decoder_cls = getattr(decoders_module, "GZipDecoder", None) if decoders_module else None
+    if gzip_decoder_cls is None:
+        L.warning("Skipping httpx gzip decoder patch: httpx internals changed.")
+        return
+
+    setattr(gzip_decoder_cls, "decode", _patched_gzip_decode)
+    _httpx_gzip_patch_applied = True
+
+
+def _patch_httpx_json_dumps_once() -> None:
+    global _httpx_json_patch_applied
+    if _httpx_json_patch_applied:
+        return
+
+    content_module = getattr(httpx, "_content", None)
+    if content_module is None or not hasattr(content_module, "json_dumps"):
+        L.warning("Skipping httpx JSON patch: httpx internals changed.")
+        return
+
+    content_module.json_dumps = _patched_httpx_json_dumps
+    _httpx_json_patch_applied = True
 
 
 ########################################################################################################################
@@ -352,6 +387,10 @@ def _http_add_checksum(request: httpx.Request) -> None:
 
 class OmronConnect(ABC):
     @abstractmethod
+    def close(self) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
     def login(self, email: str, password: str, country: str) -> T.Optional[str]:
         raise NotImplementedError
 
@@ -417,9 +456,10 @@ class OmronConnect1(OmronConnect):
                 "X-Kii-AppKey": app_key,
             },
         )
+        _patch_httpx_gzip_decoder_once()
 
-        # pylint: disable=protected-access
-        setattr(httpx._decoders.GZipDecoder, "decode", _patched_gzip_decode)
+    def close(self) -> None:
+        self._client.close()
 
     def login(self, email: str, password: str, country: str = "") -> T.Optional[str]:
         authData = {
@@ -716,15 +756,12 @@ class OmronConnect2(OmronConnect):
         f"OMRON connect/{_APP_VERSION} (com.omronhealthcare.omronconnect; build:24; iOS 18.7.2) Alamofire/5.9.1"
     )
 
-    # monkey-patch httpx so checksum(req.content) works with omron servers.
-    # pylint: disable=protected-access
-    httpx._content.json_dumps = lambda obj, **kw: json.dumps(obj, **{**kw, "separators": (",", ":")})
-
     def __init__(self, server: str, country: str):
         self._server = server
         self._country = country
         self._headers: T.Dict[str, str] = {}
         self._email: str = ""
+        _patch_httpx_json_dumps_once()
 
         # Wrap transport with LogTransport for debug logging with credential redaction (always)
         # Keep checksum event hook (required for API v2)
@@ -737,6 +774,9 @@ class OmronConnect2(OmronConnect):
         )
         # some oi-api.ohiomron.xxx/app request require /v2
         self._v2 = "/v2" if "/app" in server else ""
+
+    def close(self) -> None:
+        self._client.close()
 
     def login(self, email: str, password: str, country: str) -> T.Optional[str]:
         data = {
@@ -953,13 +993,20 @@ def try_servers(
     servers: T.List[str], country: str, operation: T.Callable[[OmronConnect], T.Any]
 ) -> T.Tuple[OmronConnect, T.Any]:
     for server in servers:
+        oc = None
         try:
             oc = get_omron_connect(server, country)
             result = operation(oc)
             return oc, result
 
         except (httpx.ConnectError, httpx.TimeoutException, HTTPStatusError):
+            if oc is not None:
+                oc.close()
             continue
+        except Exception:
+            if oc is not None:
+                oc.close()
+            raise
 
     raise ConnectionError("All servers failed")
 
@@ -990,6 +1037,12 @@ class OmronClient:
 
         self.servers: T.List[str] = servers
         self._active_client: T.Optional[OmronConnect] = None
+
+    def close(self) -> None:
+        if self._active_client is None:
+            return
+        self._active_client.close()
+        self._active_client = None
 
     def login(self, email: str, password: str) -> T.Optional[str]:
         """

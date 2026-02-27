@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -12,10 +13,15 @@ from cryptography.fernet import Fernet, InvalidToken
 
 PBKDF2_ITERATIONS = 600_000
 PASSWORD_RESET_TOKEN_BYTES = 32
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def _normalize_username(username: str) -> str:
     return username.strip().lower()
+
+
+def _is_valid_email(value: str) -> bool:
+    return bool(EMAIL_PATTERN.fullmatch(value.strip()))
 
 
 def _hash_password(password: str) -> str:
@@ -509,8 +515,10 @@ class SecureStore:
 
     def create_user(self, username: str, password: str) -> tuple[bool, str]:
         username_normalized = _normalize_username(username)
-        if len(username_normalized) < 3:
-            return False, "Username must be at least 3 characters."
+        if not username_normalized:
+            return False, "Email is required."
+        if not _is_valid_email(username_normalized):
+            return False, "Email must be a valid address."
         if len(password) < 10:
             return False, "Password must be at least 10 characters."
 
@@ -1012,6 +1020,15 @@ class SecureStore:
                 "DELETE FROM login_throttle WHERE scope = ? AND key_value = ?",
                 (scope, key_value),
             )
+
+    def clear_login_failures_for_username(self, username: str) -> None:
+        username_normalized = _normalize_username(username)
+        if not username_normalized:
+            return
+        self._execute(
+            "DELETE FROM login_throttle WHERE scope = ? AND key_value = ?",
+            ("user", username_normalized),
+        )
 
     def _read_credential_row(self, user_id: int) -> Mapping[str, Any] | None:
         return self._fetchone(

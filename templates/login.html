@@ -22,8 +22,8 @@
         <form action="/login" method="post">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
 
-          <label for="username">Username</label>
-          <input id="username" name="username" type="text" required autocomplete="username" />
+          <label for="username">Email</label>
+          <input id="username" name="username" type="email" required autocomplete="username" />
 
           <label for="password">Password</label>
           <input id="password" name="password" type="password" required autocomplete="current-password" />
@@ -39,8 +39,8 @@
         <form action="/register" method="post">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
 
-          <label for="register_username">Username</label>
-          <input id="register_username" name="register_username" type="text" required autocomplete="username" />
+          <label for="register_username">Email</label>
+          <input id="register_username" name="register_username" type="email" required autocomplete="username" />
 
           <label for="register_password">Password</label>
           <input id="register_password" name="register_password" type="password" required autocomplete="new-password" />

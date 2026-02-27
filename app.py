@@ -5,7 +5,6 @@ import os
 import secrets
 import smtplib
 
-import pytz
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from functools import wraps
@@ -18,6 +17,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from omronconnect import BPMeasurement, DeviceCategory, OmronClient
 from secure_store import SecureStore
+from tz_compat import pytz
 
 app = Flask(__name__)
 
@@ -218,8 +218,8 @@ def _set_security_headers(response):
         (
             "default-src 'self'; "
             "img-src 'self' data: https://github.githubassets.com https://stripe.com; "
-            "style-src 'self' 'unsafe-inline'; "
-            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self'; "
+            "script-src 'self'; "
             "connect-src 'self'; "
             "font-src 'self' data:; "
             "object-src 'none'; "
@@ -305,6 +305,12 @@ def _app_base_url() -> str:
     return request.url_root.rstrip("/")
 
 
+def _password_reset_throttle_inputs(username: str, client_ip: str) -> tuple[str, str]:
+    username_key = f"pwdreset:{username.strip().lower()}"
+    ip_key = f"pwdreset:{client_ip.strip()}"
+    return username_key, ip_key
+
+
 def _json_no_store(payload: dict[str, object], status_code: int = 200):
     response = jsonify(payload)
     response.status_code = status_code
@@ -347,8 +353,10 @@ def _send_password_reset_email(recipient: str, reset_link: str) -> bool:
     if not smtp_host or not smtp_from:
         app.logger.warning("Password reset email not sent: SMTP_HOST/SMTP_FROM not configured.")
         return False
-    if "@" not in recipient:
-        app.logger.warning("Password reset email not sent: username is not an email address.")
+
+    recipient_value = recipient.strip()
+    if "@" not in recipient_value:
+        app.logger.warning("Password reset email not sent: invalid recipient address.")
         return False
 
     smtp_port_default = "587" if _env_flag("SMTP_USE_TLS", True) else "25"
@@ -362,7 +370,7 @@ def _send_password_reset_email(recipient: str, reset_link: str) -> bool:
     message = EmailMessage()
     message["Subject"] = "Omron to Garmin Sync - Password reset"
     message["From"] = smtp_from
-    message["To"] = recipient
+    message["To"] = recipient_value
     message.set_content(
         (
             "A password reset was requested for your Omron to Garmin Sync account.\n\n"
@@ -445,28 +453,50 @@ def forgot_password_action():
         return redirect(url_for("index"))
 
     username = request.form.get("username", "").strip().lower()
+    client_ip = _client_ip()
     if not username:
-        return render_template("forgot_password.html", error="Username is required.", success=None), 400
+        return render_template("forgot_password.html", error="Email is required.", success=None), 400
+
+    throttle_username, throttle_ip = _password_reset_throttle_inputs(username, client_ip)
+    lockout_seconds = STORE.get_login_lockout_seconds(throttle_username, throttle_ip)
+    if lockout_seconds > 0:
+        _record_audit_event(
+            "auth.password_reset.blocked",
+            outcome="blocked",
+            username=username,
+            details={"reason": "lockout", "remaining_seconds": lockout_seconds},
+        )
+        return (
+            render_template(
+                "forgot_password.html",
+                error=f"Too many reset attempts. Try again in {_format_duration(lockout_seconds)}.",
+                success=None,
+            ),
+            429,
+        )
 
     created, recipient, token = STORE.create_password_reset_token(
         username,
         ttl_seconds=_password_reset_ttl_seconds,
     )
+    email_sent = False
     if created:
         reset_link = f"{_app_base_url()}/reset-password/{token}"
-        _send_password_reset_email(recipient, reset_link)
+        email_sent = _send_password_reset_email(recipient, reset_link)
+
+    STORE.record_login_failure(throttle_username, throttle_ip)
 
     _record_audit_event(
         "auth.password_reset.requested",
         outcome="success",
         username=username,
-        details={"account_exists": created},
+        details={"reset_token_created": created, "email_sent": email_sent},
     )
 
     return render_template(
         "forgot_password.html",
         error=None,
-        success="If an account exists for that username, a password reset link has been sent.",
+        success="If an account exists for that email, a password reset link has been sent.",
     )
 
 
@@ -507,7 +537,7 @@ def login_action():
             status_code = 429
             outcome = "blocked"
         else:
-            error_message = "Invalid username or password."
+            error_message = "Invalid email or password."
             status_code = 401
             outcome = "failure"
         _record_audit_event(
@@ -525,7 +555,7 @@ def login_action():
             status_code,
         )
 
-    STORE.clear_login_failures(username, client_ip)
+    STORE.clear_login_failures_for_username(username)
     _set_authenticated_session(user)
     _record_audit_event(
         "auth.login.success",
@@ -634,12 +664,12 @@ def register_action():
         _record_audit_event(
             "auth.register.failed",
             outcome="failure",
-            details={"reason": "missing_username"},
+            details={"reason": "missing_email"},
         )
         return (
             render_template(
                 "login.html",
-                error="Username is required.",
+                error="Email is required.",
                 registration_open=True,
             ),
             400,
@@ -993,43 +1023,45 @@ def load_omron_measurements(
     days: int,
 ) -> list[BPMeasurement]:
     oc, _ = login_omron(email, password, country)
+    try:
+        devices = oc.get_registered_devices(days=None) or []
+        bpm_devices = [dev for dev in devices if dev.category == DeviceCategory.BPM]
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        start_ms = int((datetime.now(timezone.utc).timestamp() - (days * 86400)) * 1000)
 
-    devices = oc.get_registered_devices(days=None) or []
-    bpm_devices = [dev for dev in devices if dev.category == DeviceCategory.BPM]
-    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-    start_ms = int((datetime.now(timezone.utc).timestamp() - (days * 86400)) * 1000)
+        if bpm_devices:
+            device = bpm_devices[0]
+            measurements = oc.get_measurements(device, searchDateFrom=start_ms, searchDateTo=now_ms)
+            return [m for m in measurements if isinstance(m, BPMeasurement)]
 
-    if bpm_devices:
-        device = bpm_devices[0]
-        measurements = oc.get_measurements(device, searchDateFrom=start_ms, searchDateTo=now_ms)
-        return [m for m in measurements if isinstance(m, BPMeasurement)]
-
-    # Fallback: try API v2 direct BP sync if device listing returns empty
-    active_client = getattr(oc, "_active_client", None)
-    if active_client and hasattr(active_client, "get_bp_measurements"):
-        raw = active_client.get_bp_measurements(lastSyncedTime=start_ms)
-        results: list[BPMeasurement] = []
-        for item in raw or []:
-            try:
-                results.append(
-                    BPMeasurement(
-                        systolic=int(item["systolic"]),
-                        diastolic=int(item["diastolic"]),
-                        pulse=int(item["pulse"]),
-                        measurementDate=int(item["measurementDate"]),
-                        timeZone=pytz.FixedOffset(int(item["timeZone"]) // 60),
-                        irregularHB=int(item.get("irregularHB", 0)) != 0,
-                        movementDetect=int(item.get("movementDetect", 0)) != 0,
-                        cuffWrapDetect=int(item.get("cuffWrapDetect", 0)) != 0,
-                        notes=item.get("notes", ""),
+        # Fallback: try API v2 direct BP sync if device listing returns empty
+        active_client = getattr(oc, "_active_client", None)
+        if active_client and hasattr(active_client, "get_bp_measurements"):
+            raw = active_client.get_bp_measurements(lastSyncedTime=start_ms)
+            results: list[BPMeasurement] = []
+            for item in raw or []:
+                try:
+                    results.append(
+                        BPMeasurement(
+                            systolic=int(item["systolic"]),
+                            diastolic=int(item["diastolic"]),
+                            pulse=int(item["pulse"]),
+                            measurementDate=int(item["measurementDate"]),
+                            timeZone=pytz.FixedOffset(int(item["timeZone"]) // 60),
+                            irregularHB=int(item.get("irregularHB", 0)) != 0,
+                            movementDetect=int(item.get("movementDetect", 0)) != 0,
+                            cuffWrapDetect=int(item.get("cuffWrapDetect", 0)) != 0,
+                            notes=item.get("notes", ""),
+                        )
                     )
-                )
-            except Exception:
-                continue
-        if results:
-            return results
+                except Exception:
+                    continue
+            if results:
+                return results
 
-    raise ValueError('No OMRON blood pressure devices found on your account.')
+        raise ValueError('No OMRON blood pressure devices found on your account.')
+    finally:
+        oc.close()
 
 
 def get_existing_bp_timestamps(gc: Garmin, readings: list[dict[str, int | datetime]], local_tz) -> set[int]:

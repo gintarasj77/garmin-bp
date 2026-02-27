@@ -2,6 +2,8 @@
 
 Flask web app to sync OMRON Connect blood pressure readings to Garmin Connect.
 
+Live app: https://garmin-bp.onrender.com/
+
 ## Requirements
 
 - Python 3.11+ (project uses `enum.StrEnum`)
@@ -9,7 +11,7 @@ Flask web app to sync OMRON Connect blood pressure readings to Garmin Connect.
 
 ## Security model
 
-- App users authenticate with username/password (hashed with PBKDF2-SHA256)
+- App users authenticate with email/password (hashed with PBKDF2-SHA256)
 - First registered user becomes admin
 - Sync credentials can be stored encrypted server-side per app user
 - Sync credentials are decrypted only at request time for sync operations

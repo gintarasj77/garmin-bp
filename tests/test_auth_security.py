@@ -100,23 +100,29 @@ class AuthSecurityTests(unittest.TestCase):
 
     def test_registration_only_for_first_account_by_default(self):
         client = self.app.test_client()
-        first = self._register(client, "adminuser", "Password123!")
+        first = self._register(client, "adminuser@example.com", "Password123!")
         self.assertEqual(first.status_code, 302)
 
         second_client = self.app.test_client()
-        second = self._register(second_client, "seconduser", "Password456!")
+        second = self._register(second_client, "seconduser@example.com", "Password456!")
         self.assertEqual(second.status_code, 403)
         self.assertIn("Registration is disabled", second.get_data(as_text=True))
 
+    def test_registration_requires_valid_email(self):
+        client = self.app.test_client()
+        response = self._register(client, "not-an-email", "Password123!")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Email must be a valid address", response.get_data(as_text=True))
+
     def test_forgot_password_returns_generic_message(self):
-        created, message = self.store.create_user("resetuser", "ResetPass123!")
+        created, message = self.store.create_user("resetuser@example.com", "ResetPass123!")
         self.assertTrue(created, message)
 
         client = self.app.test_client()
         csrf = self._csrf_for_path(client, "/forgot-password")
         existing = client.post(
             "/forgot-password",
-            data={"csrf_token": csrf, "username": "resetuser"},
+            data={"csrf_token": csrf, "username": "resetuser@example.com"},
             follow_redirects=False,
         )
         self.assertEqual(existing.status_code, 200)
@@ -131,6 +137,30 @@ class AuthSecurityTests(unittest.TestCase):
         self.assertEqual(missing.status_code, 200)
         self.assertIn("If an account exists", missing.get_data(as_text=True))
 
+    def test_forgot_password_is_rate_limited(self):
+        created, message = self.store.create_user("ratelimituser@example.com", "RateLimitPass123!")
+        self.assertTrue(created, message)
+
+        client = self.app.test_client()
+
+        for _ in range(3):
+            csrf = self._csrf_for_path(client, "/forgot-password")
+            response = client.post(
+                "/forgot-password",
+                data={"csrf_token": csrf, "username": "ratelimituser@example.com"},
+                follow_redirects=False,
+            )
+            self.assertEqual(response.status_code, 200)
+
+        csrf = self._csrf_for_path(client, "/forgot-password")
+        blocked = client.post(
+            "/forgot-password",
+            data={"csrf_token": csrf, "username": "ratelimituser@example.com"},
+            follow_redirects=False,
+        )
+        self.assertEqual(blocked.status_code, 429)
+        self.assertIn("Too many reset attempts", blocked.get_data(as_text=True))
+
     def test_post_requests_require_csrf_token(self):
         client = self.app.test_client()
         response = client.post(
@@ -141,7 +171,7 @@ class AuthSecurityTests(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
 
     def test_login_lockout_after_failed_attempts(self):
-        created, message = self.store.create_user("lockuser", "CorrectPass123!")
+        created, message = self.store.create_user("lockuser@example.com", "CorrectPass123!")
         self.assertTrue(created, message)
 
         client = self.app.test_client()
@@ -150,14 +180,14 @@ class AuthSecurityTests(unittest.TestCase):
         for _ in range(2):
             response = client.post(
                 "/login",
-                data={"csrf_token": csrf, "username": "lockuser", "password": "wrong-pass"},
+                data={"csrf_token": csrf, "username": "lockuser@example.com", "password": "wrong-pass"},
                 follow_redirects=False,
             )
             self.assertEqual(response.status_code, 401)
 
         locked = client.post(
             "/login",
-            data={"csrf_token": csrf, "username": "lockuser", "password": "wrong-pass"},
+            data={"csrf_token": csrf, "username": "lockuser@example.com", "password": "wrong-pass"},
             follow_redirects=False,
         )
         self.assertEqual(locked.status_code, 429)
@@ -165,20 +195,56 @@ class AuthSecurityTests(unittest.TestCase):
 
         still_locked = client.post(
             "/login",
-            data={"csrf_token": csrf, "username": "lockuser", "password": "CorrectPass123!"},
+            data={"csrf_token": csrf, "username": "lockuser@example.com", "password": "CorrectPass123!"},
             follow_redirects=False,
         )
         self.assertEqual(still_locked.status_code, 429)
 
+    def test_successful_login_does_not_clear_ip_lockout(self):
+        created_locked, locked_msg = self.store.create_user("iplockuser@example.com", "IpLockPass123!")
+        self.assertTrue(created_locked, locked_msg)
+        created_ok, ok_msg = self.store.create_user("ipokuser@example.com", "IpOkPass123!")
+        self.assertTrue(created_ok, ok_msg)
+
+        client = self.app.test_client()
+        csrf = self._login_csrf(client)
+
+        for _ in range(3):
+            failed = client.post(
+                "/login",
+                data={"csrf_token": csrf, "username": "iplockuser@example.com", "password": "wrong-pass"},
+                follow_redirects=False,
+            )
+            if _ < 2:
+                self.assertEqual(failed.status_code, 401)
+            else:
+                self.assertEqual(failed.status_code, 429)
+
+        success_other = client.post(
+            "/login",
+            data={"csrf_token": csrf, "username": "ipokuser@example.com", "password": "IpOkPass123!"},
+            follow_redirects=False,
+        )
+        self.assertEqual(success_other.status_code, 302)
+
+        locked_client = self.app.test_client()
+        csrf_locked = self._login_csrf(locked_client)
+        post_success_attempt = locked_client.post(
+            "/login",
+            data={"csrf_token": csrf_locked, "username": "iplockuser@example.com", "password": "IpLockPass123!"},
+            follow_redirects=False,
+        )
+        self.assertEqual(post_success_attempt.status_code, 429)
+
     def test_reset_password_token_flow_and_one_time_use(self):
-        created, message = self.store.create_user("tokenuser", "StartPass123!")
+        created, message = self.store.create_user("tokenuser@example.com", "StartPass123!")
         self.assertTrue(created, message)
-        issued, _, token = self.store.create_password_reset_token("tokenuser", ttl_seconds=3600)
+        issued, _, token = self.store.create_password_reset_token("tokenuser@example.com", ttl_seconds=3600)
         self.assertTrue(issued)
         self.assertTrue(token)
 
         active_session_client = self.app.test_client()
-        active_login = self._login(active_session_client, "tokenuser", "StartPass123!")
+        active_login = self._login(active_session_client, "tokenuser@example.com", "StartPass123!")
         self.assertEqual(active_login.status_code, 302)
 
         client = self.app.test_client()
@@ -214,11 +280,11 @@ class AuthSecurityTests(unittest.TestCase):
         self.assertTrue(invalidated.headers.get("Location", "").endswith("/login"))
 
         old_login_client = self.app.test_client()
-        old_login = self._login(old_login_client, "tokenuser", "StartPass123!")
+        old_login = self._login(old_login_client, "tokenuser@example.com", "StartPass123!")
         self.assertEqual(old_login.status_code, 401)
 
         new_login_client = self.app.test_client()
-        new_login = self._login(new_login_client, "tokenuser", "NewTokenPass123!")
+        new_login = self._login(new_login_client, "tokenuser@example.com", "NewTokenPass123!")
         self.assertEqual(new_login.status_code, 302)
 
         reuse_client = self.app.test_client()
@@ -239,41 +305,41 @@ class AuthSecurityTests(unittest.TestCase):
         self.assertTrue(
             any(
                 event.get("event_type") == "auth.password_reset.success"
-                and event.get("username") == "tokenuser"
+                and event.get("username") == "tokenuser@example.com"
                 for event in events
             )
         )
 
     def test_admin_page_access_control(self):
-        created_admin, message_admin = self.store.create_user("adminone", "AdminPass123!")
+        created_admin, message_admin = self.store.create_user("adminone@example.com", "AdminPass123!")
         self.assertTrue(created_admin, message_admin)
-        created_user, message_user = self.store.create_user("regularone", "UserPass123!")
+        created_user, message_user = self.store.create_user("regularone@example.com", "UserPass123!")
         self.assertTrue(created_user, message_user)
 
         regular_client = self.app.test_client()
-        login_regular = self._login(regular_client, "regularone", "UserPass123!")
+        login_regular = self._login(regular_client, "regularone@example.com", "UserPass123!")
         self.assertEqual(login_regular.status_code, 302)
         forbidden = regular_client.get("/admin/users", follow_redirects=False)
         self.assertEqual(forbidden.status_code, 302)
         self.assertTrue(forbidden.headers.get("Location", "").endswith("/"))
 
         admin_client = self.app.test_client()
-        login_admin = self._login(admin_client, "adminone", "AdminPass123!")
+        login_admin = self._login(admin_client, "adminone@example.com", "AdminPass123!")
         self.assertEqual(login_admin.status_code, 302)
         allowed = admin_client.get("/admin/users", follow_redirects=False)
         self.assertEqual(allowed.status_code, 200)
         self.assertIn("Admin users", allowed.get_data(as_text=True))
 
     def test_password_change_requires_current_password_and_updates_login(self):
-        created, message = self.store.create_user("changepass", "OldPassword123!")
+        created, message = self.store.create_user("changepass@example.com", "OldPassword123!")
         self.assertTrue(created, message)
 
         client = self.app.test_client()
-        login = self._login(client, "changepass", "OldPassword123!")
+        login = self._login(client, "changepass@example.com", "OldPassword123!")
         self.assertEqual(login.status_code, 302)
 
         other_client = self.app.test_client()
-        other_login = self._login(other_client, "changepass", "OldPassword123!")
+        other_login = self._login(other_client, "changepass@example.com", "OldPassword123!")
         self.assertEqual(other_login.status_code, 302)
 
         csrf = self._account_csrf(client)
@@ -313,33 +379,33 @@ class AuthSecurityTests(unittest.TestCase):
         self.assertTrue(other_session_after_change.headers.get("Location", "").endswith("/login"))
 
         old_login_client = self.app.test_client()
-        old_login = self._login(old_login_client, "changepass", "OldPassword123!")
+        old_login = self._login(old_login_client, "changepass@example.com", "OldPassword123!")
         self.assertEqual(old_login.status_code, 401)
 
         new_login_client = self.app.test_client()
-        new_login = self._login(new_login_client, "changepass", "NewPassword123!")
+        new_login = self._login(new_login_client, "changepass@example.com", "NewPassword123!")
         self.assertEqual(new_login.status_code, 302)
 
         events = self.store.list_audit_events(limit=100)
         self.assertTrue(
             any(
                 event.get("event_type") == "auth.password_change.success"
-                and event.get("username") == "changepass"
+                and event.get("username") == "changepass@example.com"
                 for event in events
             )
         )
 
     def test_admin_actions_are_audited(self):
-        created_admin, msg_admin = self.store.create_user("adminaudit", "AdminAudit123!")
+        created_admin, msg_admin = self.store.create_user("adminaudit@example.com", "AdminAudit123!")
         self.assertTrue(created_admin, msg_admin)
-        created_user, msg_user = self.store.create_user("memberaudit", "MemberAudit123!")
+        created_user, msg_user = self.store.create_user("memberaudit@example.com", "MemberAudit123!")
         self.assertTrue(created_user, msg_user)
 
-        admin_id = self._user_id("adminaudit")
-        member_id = self._user_id("memberaudit")
+        admin_id = self._user_id("adminaudit@example.com")
+        member_id = self._user_id("memberaudit@example.com")
 
         client = self.app.test_client()
-        login = self._login(client, "adminaudit", "AdminAudit123!")
+        login = self._login(client, "adminaudit@example.com", "AdminAudit123!")
         self.assertEqual(login.status_code, 302)
 
         csrf = self._csrf_for_path(client, "/admin/users")
@@ -362,9 +428,9 @@ class AuthSecurityTests(unittest.TestCase):
         )
 
     def test_sync_history_records_success_and_counts(self):
-        created, message = self.store.create_user("syncuser", "SyncUserPass123!")
+        created, message = self.store.create_user("syncuser@example.com", "SyncUserPass123!")
         self.assertTrue(created, message)
-        user_id = self._user_id("syncuser")
+        user_id = self._user_id("syncuser@example.com")
 
         class FakeMeasurement:
             def __init__(self, systolic: int, diastolic: int, pulse: int, offset_minutes: int):
@@ -385,7 +451,7 @@ class AuthSecurityTests(unittest.TestCase):
 
         try:
             client = self.app.test_client()
-            login = self._login(client, "syncuser", "SyncUserPass123!")
+            login = self._login(client, "syncuser@example.com", "SyncUserPass123!")
             self.assertEqual(login.status_code, 302)
 
             csrf = self._csrf_for_path(client, "/")
@@ -423,7 +489,7 @@ class AuthSecurityTests(unittest.TestCase):
         self.assertEqual(counts.get("success"), 1)
 
         page = self.app.test_client()
-        login_page = self._login(page, "syncuser", "SyncUserPass123!")
+        login_page = self._login(page, "syncuser@example.com", "SyncUserPass123!")
         self.assertEqual(login_page.status_code, 302)
         history_page = page.get("/sync-history", follow_redirects=False)
         self.assertEqual(history_page.status_code, 200)
@@ -432,9 +498,9 @@ class AuthSecurityTests(unittest.TestCase):
         self.assertIn("Successfully synced", html)
 
     def test_sync_history_retry_creates_retry_entry(self):
-        created, message = self.store.create_user("retrysync", "RetrySyncPass123!")
+        created, message = self.store.create_user("retrysync@example.com", "RetrySyncPass123!")
         self.assertTrue(created, message)
-        user_id = self._user_id("retrysync")
+        user_id = self._user_id("retrysync@example.com")
 
         class FakeMeasurement:
             def __init__(self):
@@ -461,7 +527,7 @@ class AuthSecurityTests(unittest.TestCase):
 
         try:
             client = self.app.test_client()
-            login = self._login(client, "retrysync", "RetrySyncPass123!")
+            login = self._login(client, "retrysync@example.com", "RetrySyncPass123!")
             self.assertEqual(login.status_code, 302)
 
             csrf = self._csrf_for_path(client, "/")
@@ -502,11 +568,11 @@ class AuthSecurityTests(unittest.TestCase):
         self.assertGreaterEqual(call_count["value"], 2)
 
     def test_account_delete_flow(self):
-        created, message = self.store.create_user("deleteuser", "DeletePass123!")
+        created, message = self.store.create_user("deleteuser@example.com", "DeletePass123!")
         self.assertTrue(created, message)
 
         client = self.app.test_client()
-        login = self._login(client, "deleteuser", "DeletePass123!")
+        login = self._login(client, "deleteuser@example.com", "DeletePass123!")
         self.assertEqual(login.status_code, 302)
 
         csrf = self._account_csrf(client)
@@ -548,16 +614,16 @@ class AuthSecurityTests(unittest.TestCase):
         self.assertEqual(deleted.status_code, 200)
         self.assertIn("Account deleted", deleted.get_data(as_text=True))
 
-        self.assertIsNone(self.store.authenticate_user("deleteuser", "DeletePass123!"))
+        self.assertIsNone(self.store.authenticate_user("deleteuser@example.com", "DeletePass123!"))
 
     def test_last_admin_cannot_self_delete_when_other_users_exist(self):
-        created_admin, message_admin = self.store.create_user("adminkeep", "AdminKeep123!")
+        created_admin, message_admin = self.store.create_user("adminkeep@example.com", "AdminKeep123!")
         self.assertTrue(created_admin, message_admin)
-        created_user, message_user = self.store.create_user("memberuser", "MemberPass123!")
+        created_user, message_user = self.store.create_user("memberuser@example.com", "MemberPass123!")
         self.assertTrue(created_user, message_user)
 
         client = self.app.test_client()
-        login = self._login(client, "adminkeep", "AdminKeep123!")
+        login = self._login(client, "adminkeep@example.com", "AdminKeep123!")
         self.assertEqual(login.status_code, 302)
 
         csrf = self._account_csrf(client)
@@ -621,3 +687,4 @@ class AuthSecurityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
