@@ -225,7 +225,8 @@ class AuthSecurityTests(unittest.TestCase):
             data={"csrf_token": csrf, "username": "ipokuser@example.com", "password": "IpOkPass123!"},
             follow_redirects=False,
         )
-        self.assertEqual(success_other.status_code, 302)
+        self.assertEqual(success_other.status_code, 429)
+        self.assertIn("Too many failed attempts", success_other.get_data(as_text=True))
 
         locked_client = self.app.test_client()
         csrf_locked = self._login_csrf(locked_client)
