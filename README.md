@@ -15,16 +15,18 @@ Live app: https://garmin-bp.onrender.com/
 - First registered user becomes admin
 - Sync credentials can be stored encrypted server-side per app user
 - Sync credentials are decrypted only at request time for sync operations
+- Garmin sync supports both Garmin Global (`garmin.com`) and Garmin China (`garmin.cn`) accounts
 - Session uses secure cookie settings (`HttpOnly`, `SameSite=Lax`)
 - CSRF protection is enforced for write operations (`POST/PUT/PATCH/DELETE`)
 - Security response headers are set (CSP, frame deny, content-type nosniff, referrer policy, permissions policy, HSTS on HTTPS)
-- Brute-force protection is enabled for login (rate limit + temporary lockout)
+- Brute-force protection is enabled for login (username + IP throttling with temporary lockout)
 - Forgot-password flow uses one-time expiring reset tokens (email delivery)
-- Admin page supports listing users and disabling/deleting accounts
+- Admin page supports listing users and disabling/deleting accounts while preserving at least one active admin
+- User/admin lifecycle writes are transaction-safe to avoid orphaning the app without an active admin
 - Users can change their own password from the account page
 - Password change/reset invalidates active sessions
 - Audit trail stores security/admin events (logins, password flows, admin actions)
-- Sync history stores run status, counts, and error reasons with retry support
+- Sync history stores run status, counts, and error reasons with retry support when both providers have saved encrypted credentials
 
 ## Required environment variables (production)
 
@@ -169,7 +171,7 @@ The app includes a `Procfile` for start-command autodetection.
 
 ## First-time setup
 
-1. Open the app and create the first account.
+1. Open the app and create the first account. It becomes the initial admin.
 2. Sign in with that account.
 3. If you want open self-signup for more users, set `ALLOW_REGISTRATION=1`.
 
@@ -177,19 +179,25 @@ The app includes a `Procfile` for start-command autodetection.
 
 1. Sign in.
 2. Enter OMRON + Garmin credentials.
-3. Optionally check "Save ... credentials encrypted on server" for one-click reuse.
-4. Click "Sync from OMRON to Garmin".
-5. Use "Disconnect" on each provider section to revoke and clear saved credentials.
-6. Open `History` to review sync outcomes and retry failed runs.
-7. Open `Account` to change your app password.
-8. Open `Account` to delete your own account (requires password + `DELETE` confirmation).
-9. If you are admin, open `Admin` to disable/delete user accounts.
-10. Admin page shows recent security events (audit trail).
-11. Use `Forgot password?` on sign-in page to request email reset link.
+3. Choose the Garmin region:
+   - `Global (garmin.com)` for standard Garmin Connect accounts
+   - `China (garmin.cn)` for Garmin China accounts
+4. Optionally check "Save ... credentials encrypted on server" for one-click reuse.
+5. Click "Sync from OMRON to Garmin".
+6. Use "Clear saved" on each provider section to clear locally saved encrypted credentials from this app.
+7. Open `History` to review sync outcomes and retry failed runs when both Garmin and OMRON credentials are saved.
+8. Open `Account` to change your app password.
+9. Open `Account` to delete your own account (requires password + `DELETE` confirmation).
+10. If you are admin, open `Admin` to disable/delete user accounts.
+11. Admin page shows recent security events (audit trail).
+12. Use `Forgot password?` on sign-in page to request email reset link.
 
 ## Notes
 
+- If your OMRON account has multiple blood pressure devices, the app aggregates readings across all of them and de-duplicates overlaps.
 - Stored credentials are per app user account.
+- Retry uses the currently saved encrypted Garmin and OMRON credentials.
+- "Clear saved" clears locally saved encrypted credentials in this app; it does not revoke access at Garmin or OMRON.
 - Prefer `DATABASE_URL` for persistent storage on Render free (ephemeral filesystem can lose SQLite data on redeploy).
 - If `CREDENTIALS_ENCRYPTION_KEY` changes, previously saved credentials cannot be decrypted.
 - Keep backup artifacts private and rotate `NEON_DATABASE_URL` if exposure is suspected.

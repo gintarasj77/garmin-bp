@@ -34,6 +34,12 @@
       {% if success %}
       <div class="message success">{{ success }}</div>
       {% endif %}
+      {% if not retry_ready %}
+      <div class="message">
+        Retry uses your currently saved encrypted Garmin and OMRON credentials.
+        Save both on the sync page to enable retry.
+      </div>
+      {% endif %}
 
       <div class="stats-grid">
         <div class="stat-card">
@@ -98,7 +104,12 @@
               <td>
                 <form method="post" action="/sync-history/{{ entry.id }}/retry">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-                  <button type="submit" class="btn-inline" {% if entry.status == 'running' %}disabled{% endif %}>Retry</button>
+                  <button
+                    type="submit"
+                    class="btn-inline"
+                    {% if entry.status == 'running' or not retry_ready %}disabled{% endif %}
+                    {% if not retry_ready %}title="Save both Garmin and OMRON credentials on the sync page to enable retry."{% endif %}
+                  >Retry</button>
                 </form>
               </td>
             </tr>

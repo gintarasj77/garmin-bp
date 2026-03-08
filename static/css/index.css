@@ -214,7 +214,8 @@
 
     input[type="email"],
     input[type="password"],
-    input[type="text"] {
+    input[type="text"],
+    select {
       width: 100%;
       border: 1px solid rgba(90, 104, 123, 0.75);
       border: 1px solid color-mix(in srgb, var(--md-outline) 88%, transparent);
@@ -232,7 +233,21 @@
       color: #9aa9ba;
     }
 
-    input:focus-visible {
+    select {
+      appearance: none;
+      background-image:
+        linear-gradient(45deg, transparent 50%, var(--md-text-muted) 50%),
+        linear-gradient(135deg, var(--md-text-muted) 50%, transparent 50%);
+      background-position:
+        calc(100% - 20px) calc(50% - 3px),
+        calc(100% - 14px) calc(50% - 3px);
+      background-size: 6px 6px, 6px 6px;
+      background-repeat: no-repeat;
+      padding-right: 40px;
+    }
+
+    input:focus-visible,
+    select:focus-visible {
       outline: none;
       border-color: var(--md-primary);
       box-shadow: 0 0 0 3px rgba(150, 203, 255, 0.2);
@@ -495,7 +510,8 @@
       .page,
       button,
       .support-link,
-      input {
+      input,
+      select {
         animation: none;
         transition: none;
       }

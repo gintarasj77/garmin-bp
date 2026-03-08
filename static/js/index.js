@@ -7,9 +7,11 @@ const successBox = document.getElementById('success-box');
 
 const garminEmail = document.getElementById('garmin_email');
 const garminPassword = document.getElementById('garmin_password');
+const garminRegion = document.getElementById('garmin_region');
 const saveGarmin = document.getElementById('save_garmin');
 const garminFields = document.getElementById('garmin-fields');
 const garminSaved = document.getElementById('garmin-saved');
+const garminSavedLabel = document.getElementById('garmin-saved-label');
 const garminDisconnect = document.getElementById('garmin-disconnect');
 
 const omronEmail = document.getElementById('omron_email');
@@ -51,9 +53,14 @@ async function parseJsonSafe(response) {
 
 function applyGarminState(state) {
   const isSaved = Boolean(state && state.saved);
+  const region = state?.region === 'CN' ? 'CN' : 'GLOBAL';
   garminEmail.value = state?.email || '';
   garminPassword.value = '';
+  garminRegion.value = region;
   saveGarmin.checked = isSaved;
+  garminSavedLabel.textContent = `Encrypted Garmin credentials are saved on server for ${
+    region === 'CN' ? 'Garmin China (garmin.cn)' : 'Garmin Global (garmin.com)'
+  }.`;
 
   if (isSaved) {
     garminFields.classList.add('hidden');
@@ -158,9 +165,11 @@ form.addEventListener('submit', async (event) => {
   clearAlerts();
 
   const garminEmailValue = garminEmail.value.trim();
+  const garminRegionValue = garminRegion.value.trim().toUpperCase() === 'CN' ? 'CN' : 'GLOBAL';
   const omronEmailValue = omronEmail.value.trim();
   const omronCountryValue = omronCountry.value.trim().toUpperCase();
   garminEmail.value = garminEmailValue;
+  garminRegion.value = garminRegionValue;
   omronEmail.value = omronEmailValue;
   omronCountry.value = omronCountryValue;
 

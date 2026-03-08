@@ -509,22 +509,53 @@ def login_action():
     password = request.form.get("password", "")
     client_ip = _client_ip()
 
-    lockout_seconds = STORE.get_login_lockout_seconds(username, client_ip)
-    if lockout_seconds > 0:
+    lockout_details = STORE.get_login_lockout_details(username, client_ip)
+    username_lockout_seconds = int(lockout_details.get("user") or 0)
+    ip_lockout_seconds = int(lockout_details.get("ip") or 0)
+    if username_lockout_seconds > 0:
         _record_audit_event(
             "auth.login.blocked",
             outcome="blocked",
             username=username,
-            details={"reason": "lockout", "remaining_seconds": lockout_seconds},
+            details={"reason": "user_lockout", "remaining_seconds": username_lockout_seconds},
         )
         return (
             render_template(
                 "login.html",
-                error=f"Too many failed attempts. Try again in {_format_duration(lockout_seconds)}.",
+                error=f"Too many failed attempts. Try again in {_format_duration(username_lockout_seconds)}.",
                 registration_open=_registration_open(),
             ),
             429,
         )
+
+    if ip_lockout_seconds > 0:
+        user = STORE.authenticate_user(username, password)
+        if not user:
+            _record_audit_event(
+                "auth.login.blocked",
+                outcome="blocked",
+                username=username,
+                details={"reason": "ip_lockout", "remaining_seconds": ip_lockout_seconds},
+            )
+            return (
+                render_template(
+                    "login.html",
+                    error=f"Too many failed attempts. Try again in {_format_duration(ip_lockout_seconds)}.",
+                    registration_open=_registration_open(),
+                ),
+                429,
+            )
+
+        STORE.clear_login_failures_for_username(username)
+        _set_authenticated_session(user)
+        _record_audit_event(
+            "auth.login.success",
+            outcome="success",
+            actor_user_id=int(user["id"]),
+            target_user_id=int(user["id"]),
+            username=str(user["username"]),
+        )
+        return redirect(url_for("index"))
 
     user = STORE.authenticate_user(username, password)
     if not user:
@@ -641,7 +672,8 @@ def reset_password_action(token: str):
 
 @app.route("/register", methods=["POST"])
 def register_action():
-    if not _registration_open():
+    allow_registration = _env_flag("ALLOW_REGISTRATION", False)
+    if not allow_registration and STORE.user_count() > 0:
         _record_audit_event(
             "auth.register.blocked",
             outcome="blocked",
@@ -691,8 +723,24 @@ def register_action():
             400,
         )
 
-    created, message = STORE.create_user(username, password)
+    created, message = STORE.register_user(username, password, allow_registration=allow_registration)
     if not created:
+        if message == "Registration is disabled.":
+            _record_audit_event(
+                "auth.register.blocked",
+                outcome="blocked",
+                username=username or None,
+                details={"reason": "registration_closed"},
+            )
+            return (
+                render_template(
+                    "login.html",
+                    error=message,
+                    registration_open=False,
+                ),
+                403,
+            )
+
         _record_audit_event(
             "auth.register.failed",
             outcome="failure",
@@ -945,7 +993,42 @@ def clear_credentials(provider: str):
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
-    return jsonify({"message": f"Cleared saved {provider} credentials."})
+    return jsonify({"message": f"Cleared locally saved {provider} credentials."})
+
+
+def _normalize_garmin_region(value: str) -> str:
+    normalized = str(value or "").strip().upper()
+    if normalized in {"CN", "GARMIN.CN", "CHINA"}:
+        return "CN"
+    return "GLOBAL"
+
+
+def _dedupe_bp_measurements(measurements: list[BPMeasurement]) -> list[BPMeasurement]:
+    seen: set[tuple[int, int, int, int, str]] = set()
+    deduped: list[BPMeasurement] = []
+    for measurement in measurements:
+        tz_value = getattr(measurement.timeZone, "zone", None) or getattr(measurement.timeZone, "key", None)
+        identity = (
+            int(measurement.measurementDate),
+            int(measurement.systolic),
+            int(measurement.diastolic),
+            int(measurement.pulse),
+            str(tz_value or measurement.timeZone),
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        deduped.append(measurement)
+
+    deduped.sort(
+        key=lambda measurement: (
+            int(measurement.measurementDate),
+            int(measurement.systolic),
+            int(measurement.diastolic),
+            int(measurement.pulse),
+        )
+    )
+    return deduped
 
 def sync_to_garmin(
     readings: list[dict[str, int | datetime]],
@@ -1030,9 +1113,11 @@ def load_omron_measurements(
         start_ms = int((datetime.now(timezone.utc).timestamp() - (days * 86400)) * 1000)
 
         if bpm_devices:
-            device = bpm_devices[0]
-            measurements = oc.get_measurements(device, searchDateFrom=start_ms, searchDateTo=now_ms)
-            return [m for m in measurements if isinstance(m, BPMeasurement)]
+            measurements: list[BPMeasurement] = []
+            for device in bpm_devices:
+                device_measurements = oc.get_measurements(device, searchDateFrom=start_ms, searchDateTo=now_ms)
+                measurements.extend(m for m in device_measurements if isinstance(m, BPMeasurement))
+            return _dedupe_bp_measurements(measurements)
 
         # Fallback: try API v2 direct BP sync if device listing returns empty
         active_client = getattr(oc, "_active_client", None)
@@ -1057,7 +1142,7 @@ def load_omron_measurements(
                 except Exception:
                     continue
             if results:
-                return results
+                return _dedupe_bp_measurements(results)
 
         raise ValueError('No OMRON blood pressure devices found on your account.')
     finally:
@@ -1122,12 +1207,16 @@ def sync_history_page():
         return _auth_required_response()
 
     user_id = int(user["id"])
+    credential_status = STORE.get_status(user_id)
+    retry_ready = bool(credential_status["garmin"]["saved"] and credential_status["omron"]["saved"])
     return render_template(
         "sync_history.html",
         username=str(user["username"]),
         is_admin=bool(user.get("is_admin")),
         history=STORE.list_sync_history(user_id, limit=100),
         counts=STORE.get_sync_history_counts(user_id),
+        credential_status=credential_status,
+        retry_ready=retry_ready,
         error=request.args.get("error", "").strip() or None,
         success=request.args.get("success", "").strip() or None,
     )
@@ -1215,6 +1304,9 @@ def _sync_omron_core(
 
     garmin_email = str(form_data.get('garmin_email', '') or '').strip() or saved.get("garmin_email", "")
     garmin_password = str(form_data.get('garmin_password', '') or '') or saved.get("garmin_password", "")
+    garmin_region = _normalize_garmin_region(
+        str(form_data.get("garmin_region", "") or saved.get("garmin_region", "GLOBAL"))
+    )
     if not (garmin_email and garmin_password):
         return fail(
             'Garmin credentials required for sync.',
@@ -1224,7 +1316,7 @@ def _sync_omron_core(
         )
 
     try:
-        added = sync_to_garmin(readings, garmin_email, garmin_password, False)
+        added = sync_to_garmin(readings, garmin_email, garmin_password, garmin_region == "CN")
     except ValueError as exc:
         return fail(str(exc), 400, readings_found=len(readings), readings_uploaded=0)
     except Exception:  # pylint: disable=broad-except
@@ -1238,7 +1330,7 @@ def _sync_omron_core(
 
     try:
         if save_garmin and garmin_email and garmin_password:
-            STORE.save_garmin_credentials(user_id, garmin_email, garmin_password)
+            STORE.save_garmin_credentials(user_id, garmin_email, garmin_password, garmin_region)
         if save_omron and email and password and country:
             STORE.save_omron_credentials(user_id, email, password, country)
     except Exception:  # pylint: disable=broad-except
@@ -1308,6 +1400,23 @@ def retry_sync_history_action(history_id: int):
     entry = STORE.get_sync_history_entry(user_id, history_id)
     if not entry:
         abort(404)
+
+    credential_status = STORE.get_status(user_id)
+    retry_ready = bool(credential_status["garmin"]["saved"] and credential_status["omron"]["saved"])
+    if not retry_ready:
+        _record_audit_event(
+            "sync.retry.blocked",
+            outcome="blocked",
+            actor_user_id=user_id,
+            target_user_id=user_id,
+            details={"history_id": history_id, "reason": "missing_saved_credentials"},
+        )
+        return redirect(
+            url_for(
+                "sync_history_page",
+                error="Retry requires saved Garmin and OMRON credentials. Save both on the sync page first.",
+            )
+        )
 
     retry_form: dict[str, str] = {}
     if bool(entry.get("save_garmin_requested")):

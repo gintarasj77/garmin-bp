@@ -86,6 +86,15 @@ def _to_bool(value: Any) -> bool:
     return False
 
 
+def _normalize_garmin_region(value: Any) -> str:
+    if isinstance(value, bool):
+        return "CN" if value else "GLOBAL"
+    normalized = str(value or "").strip().upper()
+    if normalized in {"CN", "GARMIN.CN", "CHINA"}:
+        return "CN"
+    return "GLOBAL"
+
+
 class SecureStore:
     def __init__(
         self,
@@ -167,14 +176,18 @@ class SecureStore:
             conn.execute(self._adapt_query(query), params)
             conn.commit()
 
+    @staticmethod
+    def _row_mapping(row: Any) -> Mapping[str, Any] | None:
+        if row is None:
+            return None
+        if isinstance(row, sqlite3.Row):
+            return dict(row)
+        return row
+
     def _fetchone(self, query: str, params: tuple[Any, ...] = ()) -> Mapping[str, Any] | None:
         with self._connect() as conn:
             row = conn.execute(self._adapt_query(query), params).fetchone()
-            if row is None:
-                return None
-            if isinstance(row, sqlite3.Row):
-                return dict(row)
-            return row
+            return self._row_mapping(row)
 
     def _fetchall(self, query: str, params: tuple[Any, ...] = ()) -> list[Mapping[str, Any]]:
         with self._connect() as conn:
@@ -203,6 +216,16 @@ class SecureStore:
         if "session_version" not in existing:
             conn.execute("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1")
 
+    def _ensure_user_credential_columns(self, conn) -> None:
+        if self._is_postgres():
+            conn.execute("ALTER TABLE user_credentials ADD COLUMN IF NOT EXISTS garmin_region TEXT")
+            return
+
+        rows = conn.execute("PRAGMA table_info(user_credentials)").fetchall()
+        existing = {str(row["name"]) for row in rows}
+        if "garmin_region" not in existing:
+            conn.execute("ALTER TABLE user_credentials ADD COLUMN garmin_region TEXT")
+
     def _init_db(self) -> None:
         with self._connect() as conn:
             if not self._is_postgres():
@@ -226,6 +249,7 @@ class SecureStore:
                         user_id INTEGER PRIMARY KEY,
                         garmin_email TEXT,
                         garmin_password TEXT,
+                        garmin_region TEXT,
                         omron_email TEXT,
                         omron_password TEXT,
                         omron_country TEXT,
@@ -340,6 +364,7 @@ class SecureStore:
                         user_id BIGINT PRIMARY KEY,
                         garmin_email TEXT,
                         garmin_password TEXT,
+                        garmin_region TEXT,
                         omron_email TEXT,
                         omron_password TEXT,
                         omron_country TEXT,
@@ -436,6 +461,7 @@ class SecureStore:
                 )
 
             self._ensure_user_columns(conn)
+            self._ensure_user_credential_columns(conn)
             conn.commit()
 
     @staticmethod
@@ -502,16 +528,119 @@ class SecureStore:
             row = self._fetchone("SELECT COUNT(*) AS count FROM users WHERE is_admin = ?", (True,))
         return int(row["count"]) if row else 0
 
+    def _count_users_conn(
+        self,
+        conn,
+        *,
+        admin_only: bool = False,
+        active_only: bool = False,
+        exclude_user_id: int | None = None,
+    ) -> int:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if admin_only:
+            clauses.append("is_admin = ?")
+            params.append(True)
+        if active_only:
+            clauses.append("is_active = ?")
+            params.append(True)
+        if exclude_user_id is not None:
+            clauses.append("id <> ?")
+            params.append(int(exclude_user_id))
+
+        query = "SELECT COUNT(*) AS count FROM users"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+
+        row = self._row_mapping(conn.execute(self._adapt_query(query), tuple(params)).fetchone())
+        return int(row["count"]) if row else 0
+
     def _ensure_admin_exists(self) -> None:
-        if self.user_count() == 0:
-            return
+        with self._connect() as conn:
+            self._begin_user_write(conn)
+            if self._count_users_conn(conn) == 0:
+                conn.commit()
+                return
 
-        if self._admin_count() > 0:
-            return
+            if self._count_users_conn(conn, admin_only=True, active_only=True) > 0:
+                conn.commit()
+                return
 
-        row = self._fetchone("SELECT id FROM users ORDER BY id ASC LIMIT 1")
-        if row:
-            self._execute("UPDATE users SET is_admin = ? WHERE id = ?", (True, int(row["id"])))
+            row = self._row_mapping(
+                conn.execute(
+                    self._adapt_query(
+                        "SELECT id FROM users WHERE is_admin = ? ORDER BY id ASC LIMIT 1"
+                    ),
+                    (True,),
+                ).fetchone()
+            )
+            if row is None:
+                row = self._row_mapping(
+                    conn.execute(
+                        self._adapt_query(
+                            "SELECT id FROM users WHERE is_active = ? ORDER BY id ASC LIMIT 1"
+                        ),
+                        (True,),
+                    ).fetchone()
+                )
+            if row is None:
+                row = self._row_mapping(
+                    conn.execute(
+                        self._adapt_query("SELECT id FROM users ORDER BY id ASC LIMIT 1")
+                    ).fetchone()
+                )
+
+            if row is not None:
+                conn.execute(
+                    self._adapt_query("UPDATE users SET is_admin = ?, is_active = ? WHERE id = ?"),
+                    (True, True, int(row["id"])),
+                )
+            conn.commit()
+
+    def _begin_user_write(self, conn) -> None:
+        if self._is_postgres():
+            conn.execute("LOCK TABLE users IN EXCLUSIVE MODE")
+            return
+        conn.execute("BEGIN IMMEDIATE")
+
+    def _create_user_record(
+        self,
+        username_normalized: str,
+        password_hash: str,
+        allow_existing_users: bool,
+    ) -> tuple[bool, str]:
+        try:
+            with self._connect() as conn:
+                self._begin_user_write(conn)
+
+                count_row = conn.execute(self._adapt_query("SELECT COUNT(*) AS count FROM users")).fetchone()
+                user_count = int(count_row["count"]) if count_row else 0
+                if user_count > 0 and not allow_existing_users:
+                    conn.rollback()
+                    return False, "Registration is disabled."
+
+                conn.execute(
+                    self._adapt_query(
+                        """
+                        INSERT INTO users (username, password_hash, created_at, is_admin, is_active, session_version)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """
+                    ),
+                    (
+                        username_normalized,
+                        password_hash,
+                        self._now_iso(),
+                        user_count == 0,
+                        True,
+                        1,
+                    ),
+                )
+                conn.commit()
+                return True, ""
+        except self._integrity_error as exc:
+            if getattr(exc, "sqlstate", "") == "23505" or "unique" in str(exc).lower():
+                return False, "That username already exists."
+            return False, "Could not create account."
 
     def create_user(self, username: str, password: str) -> tuple[bool, str]:
         username_normalized = _normalize_username(username)
@@ -523,20 +652,27 @@ class SecureStore:
             return False, "Password must be at least 10 characters."
 
         password_hash = _hash_password(password)
-        is_admin = self.user_count() == 0
-        try:
-            self._execute(
-                """
-                INSERT INTO users (username, password_hash, created_at, is_admin, is_active, session_version)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (username_normalized, password_hash, self._now_iso(), is_admin, True, 1),
-            )
-            return True, ""
-        except self._integrity_error as exc:
-            if getattr(exc, "sqlstate", "") == "23505" or "unique" in str(exc).lower():
-                return False, "That username already exists."
-            return False, "Could not create account."
+        return self._create_user_record(
+            username_normalized=username_normalized,
+            password_hash=password_hash,
+            allow_existing_users=True,
+        )
+
+    def register_user(self, username: str, password: str, allow_registration: bool) -> tuple[bool, str]:
+        username_normalized = _normalize_username(username)
+        if not username_normalized:
+            return False, "Email is required."
+        if not _is_valid_email(username_normalized):
+            return False, "Email must be a valid address."
+        if len(password) < 10:
+            return False, "Password must be at least 10 characters."
+
+        password_hash = _hash_password(password)
+        return self._create_user_record(
+            username_normalized=username_normalized,
+            password_hash=password_hash,
+            allow_existing_users=allow_registration,
+        )
 
     def get_user_by_id(self, user_id: int) -> dict[str, str | int | bool] | None:
         row = self._fetchone(
@@ -606,28 +742,33 @@ class SecureStore:
         return True, ""
 
     def delete_own_account(self, user_id: int, current_password: str) -> tuple[bool, str]:
-        row = self._fetchone(
-            "SELECT username, password_hash, is_admin FROM users WHERE id = ?",
-            (user_id,),
-        )
-        if not row:
-            return False, "User not found."
-
-        current_hash = str(row["password_hash"])
-        if not _verify_password(current_password, current_hash):
-            return False, "Current password is incorrect."
-
-        if _to_bool(row.get("is_admin")) and self._admin_count() <= 1:
-            others_row = self._fetchone(
-                "SELECT COUNT(*) AS count FROM users WHERE id <> ?",
-                (user_id,),
+        with self._connect() as conn:
+            self._begin_user_write(conn)
+            row = self._row_mapping(
+                conn.execute(
+                    self._adapt_query("SELECT username, password_hash, is_admin, is_active FROM users WHERE id = ?"),
+                    (user_id,),
+                ).fetchone()
             )
-            other_users = int(others_row["count"]) if others_row else 0
-            if other_users > 0:
-                return False, "Cannot delete the last admin while other users exist."
+            if not row:
+                conn.commit()
+                return False, "User not found."
 
-        username = str(row["username"])
-        self._execute("DELETE FROM users WHERE id = ?", (user_id,))
+            current_hash = str(row["password_hash"])
+            if not _verify_password(current_password, current_hash):
+                conn.commit()
+                return False, "Current password is incorrect."
+
+            if _to_bool(row.get("is_admin")) and _to_bool(row.get("is_active")):
+                other_users = self._count_users_conn(conn, exclude_user_id=user_id)
+                if other_users > 0 and self._count_users_conn(conn, admin_only=True, active_only=True) <= 1:
+                    conn.commit()
+                    return False, "Cannot delete the last active admin while other users exist."
+
+            username = str(row["username"])
+            conn.execute(self._adapt_query("DELETE FROM users WHERE id = ?"), (user_id,))
+            conn.commit()
+
         self.clear_login_failures(username, "")
         return True, ""
 
@@ -819,22 +960,34 @@ class SecureStore:
         if actor_user_id == target_user_id and not is_active:
             return False, "You cannot disable your own account."
 
-        row = self._fetchone(
-            "SELECT username, is_admin, is_active FROM users WHERE id = ?",
-            (target_user_id,),
-        )
-        if not row:
-            return False, "User not found."
+        with self._connect() as conn:
+            self._begin_user_write(conn)
+            row = self._row_mapping(
+                conn.execute(
+                    self._adapt_query("SELECT username, is_admin, is_active FROM users WHERE id = ?"),
+                    (target_user_id,),
+                ).fetchone()
+            )
+            if not row:
+                conn.commit()
+                return False, "User not found."
 
-        target_is_admin = _to_bool(row.get("is_admin"))
-        target_is_active = _to_bool(row.get("is_active"))
-        if not is_active and target_is_admin and target_is_active and self._admin_count(active_only=True) <= 1:
-            return False, "Cannot disable the last active admin."
+            target_is_admin = _to_bool(row.get("is_admin"))
+            target_is_active = _to_bool(row.get("is_active"))
+            if (
+                not is_active
+                and target_is_admin
+                and target_is_active
+                and self._count_users_conn(conn, admin_only=True, active_only=True) <= 1
+            ):
+                conn.commit()
+                return False, "Cannot disable the last active admin."
 
-        self._execute(
-            "UPDATE users SET is_active = ? WHERE id = ?",
-            (is_active, target_user_id),
-        )
+            conn.execute(
+                self._adapt_query("UPDATE users SET is_active = ? WHERE id = ?"),
+                (is_active, target_user_id),
+            )
+            conn.commit()
 
         if not is_active:
             self.clear_login_failures(str(row["username"]), "")
@@ -845,19 +998,32 @@ class SecureStore:
         if actor_user_id == target_user_id:
             return False, "You cannot delete your own account."
 
-        row = self._fetchone(
-            "SELECT username, is_admin FROM users WHERE id = ?",
-            (target_user_id,),
-        )
-        if not row:
-            return False, "User not found."
+        with self._connect() as conn:
+            self._begin_user_write(conn)
+            row = self._row_mapping(
+                conn.execute(
+                    self._adapt_query("SELECT username, is_admin, is_active FROM users WHERE id = ?"),
+                    (target_user_id,),
+                ).fetchone()
+            )
+            if not row:
+                conn.commit()
+                return False, "User not found."
 
-        target_is_admin = _to_bool(row.get("is_admin"))
-        if target_is_admin and self._admin_count() <= 1:
-            return False, "Cannot delete the last admin."
+            target_is_admin = _to_bool(row.get("is_admin"))
+            target_is_active = _to_bool(row.get("is_active"))
+            if (
+                target_is_admin
+                and target_is_active
+                and self._count_users_conn(conn, admin_only=True, active_only=True) <= 1
+            ):
+                conn.commit()
+                return False, "Cannot delete the last active admin."
 
-        username = str(row["username"])
-        self._execute("DELETE FROM users WHERE id = ?", (target_user_id,))
+            username = str(row["username"])
+            conn.execute(self._adapt_query("DELETE FROM users WHERE id = ?"), (target_user_id,))
+            conn.commit()
+
         self.clear_login_failures(username, "")
         return True, ""
 
@@ -953,12 +1119,12 @@ class SecureStore:
                 (str(row["scope"]), str(row["key_value"])),
             )
 
-    def get_login_lockout_seconds(self, username: str, client_ip: str) -> int:
+    def get_login_lockout_details(self, username: str, client_ip: str) -> dict[str, int]:
         if secrets.randbelow(100) == 0:
             self.prune_login_throttle()
 
         now = datetime.now(timezone.utc)
-        max_remaining = 0
+        remaining_by_scope = {"user": 0, "ip": 0}
         for scope, key_value in self._throttle_keys(username, client_ip):
             row = self._get_throttle_row(scope, key_value)
             if not row:
@@ -975,9 +1141,14 @@ class SecureStore:
                     (None, self._now_iso(), scope, key_value),
                 )
                 continue
-            if remaining > max_remaining:
-                max_remaining = remaining
-        return max_remaining
+            if remaining > remaining_by_scope.get(scope, 0):
+                remaining_by_scope[scope] = remaining
+
+        remaining_by_scope["max"] = max(remaining_by_scope.values(), default=0)
+        return remaining_by_scope
+
+    def get_login_lockout_seconds(self, username: str, client_ip: str) -> int:
+        return int(self.get_login_lockout_details(username, client_ip).get("max", 0))
 
     def record_login_failure(self, username: str, client_ip: str) -> None:
         now = datetime.now(timezone.utc)
@@ -1033,7 +1204,14 @@ class SecureStore:
     def _read_credential_row(self, user_id: int) -> Mapping[str, Any] | None:
         return self._fetchone(
             """
-            SELECT user_id, garmin_email, garmin_password, omron_email, omron_password, omron_country
+            SELECT
+                user_id,
+                garmin_email,
+                garmin_password,
+                garmin_region,
+                omron_email,
+                omron_password,
+                omron_country
             FROM user_credentials
             WHERE user_id = ?
             """,
@@ -1047,6 +1225,7 @@ class SecureStore:
         return {
             "garmin_email": self._decrypt(row["garmin_email"]) or "",
             "garmin_password": self._decrypt(row["garmin_password"]) or "",
+            "garmin_region": _normalize_garmin_region(self._decrypt(row.get("garmin_region"))),
             "omron_email": self._decrypt(row["omron_email"]) or "",
             "omron_password": self._decrypt(row["omron_password"]) or "",
             "omron_country": (self._decrypt(row["omron_country"]) or "").upper(),
@@ -1064,6 +1243,8 @@ class SecureStore:
             "garmin": {
                 "saved": garmin_saved,
                 "email": creds.get("garmin_email", "") if garmin_saved else "",
+                "region": creds.get("garmin_region", "GLOBAL"),
+                "is_cn": creds.get("garmin_region", "GLOBAL") == "CN",
             },
             "omron": {
                 "saved": omron_saved,
@@ -1077,6 +1258,7 @@ class SecureStore:
         user_id: int,
         garmin_email: str | None,
         garmin_password: str | None,
+        garmin_region: str | None,
         omron_email: str | None,
         omron_password: str | None,
         omron_country: str | None,
@@ -1087,15 +1269,17 @@ class SecureStore:
                 user_id,
                 garmin_email,
                 garmin_password,
+                garmin_region,
                 omron_email,
                 omron_password,
                 omron_country,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 garmin_email = excluded.garmin_email,
                 garmin_password = excluded.garmin_password,
+                garmin_region = excluded.garmin_region,
                 omron_email = excluded.omron_email,
                 omron_password = excluded.omron_password,
                 omron_country = excluded.omron_country,
@@ -1105,6 +1289,7 @@ class SecureStore:
                 user_id,
                 self._encrypt(garmin_email),
                 self._encrypt(garmin_password),
+                self._encrypt(_normalize_garmin_region(garmin_region)) if garmin_region else None,
                 self._encrypt(omron_email),
                 self._encrypt(omron_password),
                 self._encrypt(omron_country),
@@ -1112,12 +1297,13 @@ class SecureStore:
             ),
         )
 
-    def save_garmin_credentials(self, user_id: int, email: str, password: str) -> None:
+    def save_garmin_credentials(self, user_id: int, email: str, password: str, region: str = "GLOBAL") -> None:
         current = self.get_credentials_for_sync(user_id)
         self._upsert_credentials(
             user_id=user_id,
             garmin_email=email.strip(),
             garmin_password=password,
+            garmin_region=_normalize_garmin_region(region),
             omron_email=current.get("omron_email") or None,
             omron_password=current.get("omron_password") or None,
             omron_country=current.get("omron_country") or None,
@@ -1129,6 +1315,7 @@ class SecureStore:
             user_id=user_id,
             garmin_email=current.get("garmin_email") or None,
             garmin_password=current.get("garmin_password") or None,
+            garmin_region=current.get("garmin_region") or None,
             omron_email=email.strip(),
             omron_password=password,
             omron_country=country.strip().upper(),
@@ -1141,6 +1328,7 @@ class SecureStore:
                 user_id=user_id,
                 garmin_email=None,
                 garmin_password=None,
+                garmin_region=None,
                 omron_email=current.get("omron_email") or None,
                 omron_password=current.get("omron_password") or None,
                 omron_country=current.get("omron_country") or None,
@@ -1152,6 +1340,7 @@ class SecureStore:
                 user_id=user_id,
                 garmin_email=current.get("garmin_email") or None,
                 garmin_password=current.get("garmin_password") or None,
+                garmin_region=current.get("garmin_region") or None,
                 omron_email=None,
                 omron_password=None,
                 omron_country=None,

@@ -36,8 +36,11 @@
           <div class="section-title">Garmin Connect</div>
           <div id="garmin-saved" class="connected-status{% if not credential_status.garmin.saved %} hidden{% endif %}">
             <span class="status-dot"></span>
-            Encrypted Garmin credentials are saved on server.
-            <button type="button" id="garmin-disconnect" class="btn-secondary btn-inline btn-status-action">Disconnect</button>
+            <span id="garmin-saved-label">
+              Encrypted Garmin credentials are saved on server for
+              {% if credential_status.garmin.is_cn %}Garmin China (garmin.cn){% else %}Garmin Global (garmin.com){% endif %}.
+            </span>
+            <button type="button" id="garmin-disconnect" class="btn-secondary btn-inline btn-status-action">Clear saved</button>
           </div>
           <div id="garmin-fields"{% if credential_status.garmin.saved %} class="hidden"{% endif %}>
             <div class="field">
@@ -49,6 +52,14 @@
               <label class="field-label" for="garmin_password">Garmin password</label>
               <input id="garmin_password" name="garmin_password" type="password" placeholder="Enter password" autocomplete="current-password" />
               <div class="field-support">Used for sync and optionally saved encrypted on server.</div>
+            </div>
+            <div class="field">
+              <label class="field-label" for="garmin_region">Garmin region</label>
+              <select id="garmin_region" name="garmin_region">
+                <option value="GLOBAL"{% if credential_status.garmin.region != 'CN' %} selected{% endif %}>Global (garmin.com)</option>
+                <option value="CN"{% if credential_status.garmin.region == 'CN' %} selected{% endif %}>China (garmin.cn)</option>
+              </select>
+              <div class="field-support">Choose China only for Garmin China accounts that sign in on garmin.cn.</div>
             </div>
             <label class="remember-row">
               <input type="checkbox" id="save_garmin" name="save_garmin"{% if credential_status.garmin.saved %} checked{% endif %} />
@@ -62,7 +73,7 @@
           <div id="omron-saved" class="connected-status{% if not credential_status.omron.saved %} hidden{% endif %}">
             <span class="status-dot"></span>
             Encrypted OMRON credentials are saved on server.
-            <button type="button" id="omron-disconnect" class="btn-secondary btn-inline btn-status-action">Disconnect</button>
+            <button type="button" id="omron-disconnect" class="btn-secondary btn-inline btn-status-action">Clear saved</button>
           </div>
           <div id="omron-fields"{% if credential_status.omron.saved %} class="hidden"{% endif %}>
             <div class="field">
