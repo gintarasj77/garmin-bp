@@ -219,12 +219,15 @@ class SecureStore:
     def _ensure_user_credential_columns(self, conn) -> None:
         if self._is_postgres():
             conn.execute("ALTER TABLE user_credentials ADD COLUMN IF NOT EXISTS garmin_region TEXT")
+            conn.execute("ALTER TABLE user_credentials ADD COLUMN IF NOT EXISTS garmin_token_store TEXT")
             return
 
         rows = conn.execute("PRAGMA table_info(user_credentials)").fetchall()
         existing = {str(row["name"]) for row in rows}
         if "garmin_region" not in existing:
             conn.execute("ALTER TABLE user_credentials ADD COLUMN garmin_region TEXT")
+        if "garmin_token_store" not in existing:
+            conn.execute("ALTER TABLE user_credentials ADD COLUMN garmin_token_store TEXT")
 
     def _init_db(self) -> None:
         with self._connect() as conn:
@@ -250,6 +253,7 @@ class SecureStore:
                         garmin_email TEXT,
                         garmin_password TEXT,
                         garmin_region TEXT,
+                        garmin_token_store TEXT,
                         omron_email TEXT,
                         omron_password TEXT,
                         omron_country TEXT,
@@ -365,6 +369,7 @@ class SecureStore:
                         garmin_email TEXT,
                         garmin_password TEXT,
                         garmin_region TEXT,
+                        garmin_token_store TEXT,
                         omron_email TEXT,
                         omron_password TEXT,
                         omron_country TEXT,
@@ -1209,6 +1214,7 @@ class SecureStore:
                 garmin_email,
                 garmin_password,
                 garmin_region,
+                garmin_token_store,
                 omron_email,
                 omron_password,
                 omron_country
@@ -1226,6 +1232,7 @@ class SecureStore:
             "garmin_email": self._decrypt(row["garmin_email"]) or "",
             "garmin_password": self._decrypt(row["garmin_password"]) or "",
             "garmin_region": _normalize_garmin_region(self._decrypt(row.get("garmin_region"))),
+            "garmin_token_store": self._decrypt(row.get("garmin_token_store")) or "",
             "omron_email": self._decrypt(row["omron_email"]) or "",
             "omron_password": self._decrypt(row["omron_password"]) or "",
             "omron_country": (self._decrypt(row["omron_country"]) or "").upper(),
@@ -1259,6 +1266,7 @@ class SecureStore:
         garmin_email: str | None,
         garmin_password: str | None,
         garmin_region: str | None,
+        garmin_token_store: str | None,
         omron_email: str | None,
         omron_password: str | None,
         omron_country: str | None,
@@ -1270,16 +1278,18 @@ class SecureStore:
                 garmin_email,
                 garmin_password,
                 garmin_region,
+                garmin_token_store,
                 omron_email,
                 omron_password,
                 omron_country,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 garmin_email = excluded.garmin_email,
                 garmin_password = excluded.garmin_password,
                 garmin_region = excluded.garmin_region,
+                garmin_token_store = excluded.garmin_token_store,
                 omron_email = excluded.omron_email,
                 omron_password = excluded.omron_password,
                 omron_country = excluded.omron_country,
@@ -1290,6 +1300,7 @@ class SecureStore:
                 self._encrypt(garmin_email),
                 self._encrypt(garmin_password),
                 self._encrypt(_normalize_garmin_region(garmin_region)) if garmin_region else None,
+                self._encrypt(garmin_token_store),
                 self._encrypt(omron_email),
                 self._encrypt(omron_password),
                 self._encrypt(omron_country),
@@ -1304,6 +1315,7 @@ class SecureStore:
             garmin_email=email.strip(),
             garmin_password=password,
             garmin_region=_normalize_garmin_region(region),
+            garmin_token_store=None,
             omron_email=current.get("omron_email") or None,
             omron_password=current.get("omron_password") or None,
             omron_country=current.get("omron_country") or None,
@@ -1316,9 +1328,23 @@ class SecureStore:
             garmin_email=current.get("garmin_email") or None,
             garmin_password=current.get("garmin_password") or None,
             garmin_region=current.get("garmin_region") or None,
+            garmin_token_store=current.get("garmin_token_store") or None,
             omron_email=email.strip(),
             omron_password=password,
             omron_country=country.strip().upper(),
+        )
+
+    def save_garmin_token_store(self, user_id: int, token_store: str) -> None:
+        current = self.get_credentials_for_sync(user_id)
+        self._upsert_credentials(
+            user_id=user_id,
+            garmin_email=current.get("garmin_email") or None,
+            garmin_password=current.get("garmin_password") or None,
+            garmin_region=current.get("garmin_region") or None,
+            garmin_token_store=token_store,
+            omron_email=current.get("omron_email") or None,
+            omron_password=current.get("omron_password") or None,
+            omron_country=current.get("omron_country") or None,
         )
 
     def clear_provider(self, user_id: int, provider: str) -> None:
@@ -1329,6 +1355,7 @@ class SecureStore:
                 garmin_email=None,
                 garmin_password=None,
                 garmin_region=None,
+                garmin_token_store=None,
                 omron_email=current.get("omron_email") or None,
                 omron_password=current.get("omron_password") or None,
                 omron_country=current.get("omron_country") or None,
@@ -1341,6 +1368,7 @@ class SecureStore:
                 garmin_email=current.get("garmin_email") or None,
                 garmin_password=current.get("garmin_password") or None,
                 garmin_region=current.get("garmin_region") or None,
+                garmin_token_store=current.get("garmin_token_store") or None,
                 omron_email=None,
                 omron_password=None,
                 omron_country=None,

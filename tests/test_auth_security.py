@@ -463,7 +463,7 @@ class AuthSecurityTests(unittest.TestCase):
             FakeMeasurement(120, 80, 65, 0),
             FakeMeasurement(122, 82, 66, 5),
         ]
-        app_module.sync_to_garmin = lambda readings, *_args, **_kwargs: len(readings)
+        app_module.sync_to_garmin = lambda readings, *_args, **_kwargs: (len(readings), "cached-garmin-token")
 
         try:
             client = self.app.test_client()
@@ -499,6 +499,7 @@ class AuthSecurityTests(unittest.TestCase):
         self.assertEqual(history[0].get("status"), "success")
         self.assertEqual(history[0].get("readings_found"), 2)
         self.assertEqual(history[0].get("readings_uploaded"), 2)
+        self.assertEqual(self.store.get_credentials_for_sync(user_id).get("garmin_token_store"), "cached-garmin-token")
 
         counts = self.store.get_sync_history_counts(user_id)
         self.assertEqual(counts.get("total"), 1)
@@ -530,12 +531,13 @@ class AuthSecurityTests(unittest.TestCase):
         sync_regions: list[bool] = []
         app_module.load_omron_measurements = lambda *_args, **_kwargs: [FakeMeasurement()]
 
-        def fake_sync(readings, email, password, is_cn):
+        def fake_sync(readings, email, password, is_cn, token_store=""):
             self.assertTrue(email)
             self.assertTrue(password)
             self.assertEqual(len(readings), 1)
+            self.assertIsInstance(token_store, str)
             sync_regions.append(bool(is_cn))
-            return len(readings)
+            return len(readings), "garmin-cn-token"
 
         app_module.sync_to_garmin = fake_sync
 
@@ -583,6 +585,121 @@ class AuthSecurityTests(unittest.TestCase):
             app_module.sync_to_garmin = original_sync
 
         self.assertEqual(sync_regions, [True, True])
+
+    def test_sync_reuses_cached_garmin_token_store_for_saved_credentials(self):
+        created, message = self.store.create_user("garmincache@example.com", "GarminCachePass123!")
+        self.assertTrue(created, message)
+        user_id = self._user_id("garmincache@example.com")
+
+        class FakeMeasurement:
+            def __init__(self):
+                self.systolic = 121
+                self.diastolic = 81
+                self.pulse = 64
+                self.timeZone = timezone.utc
+                self.measurementDate = int(datetime(2026, 1, 7, 7, 0, tzinfo=timezone.utc).timestamp() * 1000)
+
+        original_load = app_module.load_omron_measurements
+        original_sync = app_module.sync_to_garmin
+        app_module.load_omron_measurements = lambda *_args, **_kwargs: [FakeMeasurement()]
+        sync_token_stores: list[str] = []
+
+        def fake_sync(readings, email, password, is_cn, token_store=""):
+            self.assertEqual(len(readings), 1)
+            self.assertTrue(email)
+            self.assertTrue(password)
+            sync_token_stores.append(token_store)
+            next_token = "cached-token-1" if len(sync_token_stores) == 1 else "cached-token-2"
+            return len(readings), next_token
+
+        app_module.sync_to_garmin = fake_sync
+
+        try:
+            client = self.app.test_client()
+            login = self._login(client, "garmincache@example.com", "GarminCachePass123!")
+            self.assertEqual(login.status_code, 302)
+
+            csrf = self._csrf_for_path(client, "/")
+            first_sync = client.post(
+                "/sync-omron",
+                data={
+                    "csrf_token": csrf,
+                    "omron_email": "omron@example.com",
+                    "omron_password": "omron-secret",
+                    "omron_country": "US",
+                    "garmin_email": "garmin@example.com",
+                    "garmin_password": "garmin-secret",
+                    "save_garmin": "on",
+                },
+                headers={"Accept": "application/json"},
+                follow_redirects=False,
+            )
+            self.assertEqual(first_sync.status_code, 200)
+            self.assertEqual(self.store.get_credentials_for_sync(user_id).get("garmin_token_store"), "cached-token-1")
+
+            csrf = self._csrf_for_path(client, "/")
+            second_sync = client.post(
+                "/sync-omron",
+                data={
+                    "csrf_token": csrf,
+                    "omron_email": "omron@example.com",
+                    "omron_password": "omron-secret",
+                    "omron_country": "US",
+                },
+                headers={"Accept": "application/json"},
+                follow_redirects=False,
+            )
+            self.assertEqual(second_sync.status_code, 200)
+        finally:
+            app_module.load_omron_measurements = original_load
+            app_module.sync_to_garmin = original_sync
+
+        self.assertEqual(sync_token_stores, ["", "cached-token-1"])
+        self.assertEqual(self.store.get_credentials_for_sync(user_id).get("garmin_token_store"), "cached-token-2")
+
+    def test_sync_does_not_persist_garmin_token_store_without_saved_garmin_credentials(self):
+        created, message = self.store.create_user("garminnosave@example.com", "GarminNoSavePass123!")
+        self.assertTrue(created, message)
+        user_id = self._user_id("garminnosave@example.com")
+
+        class FakeMeasurement:
+            def __init__(self):
+                self.systolic = 119
+                self.diastolic = 79
+                self.pulse = 63
+                self.timeZone = timezone.utc
+                self.measurementDate = int(datetime(2026, 1, 8, 7, 0, tzinfo=timezone.utc).timestamp() * 1000)
+
+        original_load = app_module.load_omron_measurements
+        original_sync = app_module.sync_to_garmin
+        app_module.load_omron_measurements = lambda *_args, **_kwargs: [FakeMeasurement()]
+        app_module.sync_to_garmin = lambda readings, *_args, **_kwargs: (len(readings), "transient-token")
+
+        try:
+            client = self.app.test_client()
+            login = self._login(client, "garminnosave@example.com", "GarminNoSavePass123!")
+            self.assertEqual(login.status_code, 302)
+
+            csrf = self._csrf_for_path(client, "/")
+            response = client.post(
+                "/sync-omron",
+                data={
+                    "csrf_token": csrf,
+                    "omron_email": "omron@example.com",
+                    "omron_password": "omron-secret",
+                    "omron_country": "US",
+                    "garmin_email": "garmin@example.com",
+                    "garmin_password": "garmin-secret",
+                },
+                headers={"Accept": "application/json"},
+                follow_redirects=False,
+            )
+        finally:
+            app_module.load_omron_measurements = original_load
+            app_module.sync_to_garmin = original_sync
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.store.get_credentials_for_sync(user_id).get("garmin_token_store", ""), "")
 
     def test_load_omron_measurements_aggregates_all_bpm_devices(self):
         class FakeDevice:
@@ -852,6 +969,45 @@ class AuthSecurityTests(unittest.TestCase):
             app_module.GARMIN_RETRY_STATUS_FORCELIST,
         )
         self.assertNotIn(429, FakeGarminClient.garth.configure_calls[0].get("status_forcelist", ()))
+
+    def test_login_garmin_client_uses_cached_token_store_before_password_login(self):
+        original_login = app_module.garth_sso.login
+
+        class FakeGarth:
+            def __init__(self):
+                self.configure_calls: list[dict[str, object]] = []
+
+            def configure(self, **kwargs):
+                self.configure_calls.append(kwargs)
+
+        class FakeGarminClient:
+            username = "garmin@example.com"
+            password = "garmin-secret"
+            garth = FakeGarth()
+            garmin_connect_user_settings_url = "/userprofile-service/userprofile/user-settings"
+
+            def __init__(self):
+                self.login_calls: list[str] = []
+
+            def login(self, tokenstore=None):
+                self.login_calls.append(str(tokenstore or ""))
+                return True
+
+        app_module.garth_sso.login = lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("password login should not be called when cached token store works")
+        )
+        client = FakeGarminClient()
+        try:
+            app_module._login_garmin_client(client, token_store="cached-token-store")
+        finally:
+            app_module.garth_sso.login = original_login
+
+        self.assertEqual(client.login_calls, ["cached-token-store"])
+        self.assertEqual(len(client.garth.configure_calls), 1)
+        self.assertEqual(
+            client.garth.configure_calls[0].get("status_forcelist"),
+            app_module.GARMIN_RETRY_STATUS_FORCELIST,
+        )
 
     def test_get_existing_bp_timestamps_reports_garmin_http_status(self):
         response = Response()

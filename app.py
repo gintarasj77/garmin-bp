@@ -1041,12 +1041,13 @@ def sync_to_garmin(
     email: str,
     password: str,
     is_cn: bool,
-) -> int:
+    token_store: str = "",
+) -> tuple[int, str]:
     if not email or not password:
         raise ValueError('Garmin credentials are required.')
 
     gc = Garmin(email=email, password=password, is_cn=is_cn, prompt_mfa=None)
-    _login_garmin_client(gc)
+    _login_garmin_client(gc, token_store=token_store)
 
     local_tz = datetime.now().astimezone().tzinfo
     existing = get_existing_bp_timestamps(gc, readings, local_tz)
@@ -1077,7 +1078,7 @@ def sync_to_garmin(
                 f"Garmin upload failed for reading at {dt_local.isoformat(timespec='seconds')}."
             ) from exc
         added += 1
-    return added
+    return added, gc.garth.dumps()
 
 
 class GarminSyncError(Exception):
@@ -1231,6 +1232,17 @@ def _garmin_rate_limit_error(step: str) -> GarminSyncError:
     )
 
 
+def _garmin_can_fallback_from_token_store(exc: Exception) -> bool:
+    if isinstance(exc, GarthHTTPError):
+        status_code = _garmin_http_status(exc)
+        return status_code in {401, 403}
+    if isinstance(exc, (AssertionError, AttributeError, KeyError, TypeError, ValueError)):
+        return True
+
+    detail_lower = str(exc).strip().lower()
+    return any(marker in detail_lower for marker in ("token", "oauth", "unauthorized", "forbidden"))
+
+
 def _garmin_request_error(step: str, exc: RequestException) -> GarminSyncError:
     if _garmin_is_rate_limited(exc):
         return _garmin_rate_limit_error(step)
@@ -1271,8 +1283,16 @@ def _garmin_value_error(step: str, exc: Exception) -> ValueError | GarminSyncErr
     return ValueError(f"Garmin {step} failed unexpectedly.")
 
 
-def _login_garmin_client(gc: Garmin) -> None:
+def _login_garmin_client(gc: Garmin, token_store: str = "") -> None:
     gc.garth.configure(status_forcelist=GARMIN_RETRY_STATUS_FORCELIST)
+    if token_store:
+        try:
+            gc.login(tokenstore=token_store)
+            return
+        except (AssertionError, AttributeError, KeyError, TypeError, ValueError, GarthException, GarthHTTPError, RequestException) as exc:
+            if not _garmin_can_fallback_from_token_store(exc):
+                raise _garmin_value_error("session restore", exc) from exc
+
     try:
         login_result = garth_sso.login(
             gc.username,
@@ -1442,6 +1462,15 @@ def _sync_omron_core(
     garmin_region = _normalize_garmin_region(
         str(form_data.get("garmin_region", "") or saved.get("garmin_region", "GLOBAL"))
     )
+    garmin_token_store = saved.get("garmin_token_store", "")
+    saved_garmin_matches = bool(
+        saved.get("garmin_email")
+        and saved.get("garmin_password")
+        and garmin_email == saved.get("garmin_email", "")
+        and garmin_password == saved.get("garmin_password", "")
+        and garmin_region == _normalize_garmin_region(saved.get("garmin_region", "GLOBAL"))
+    )
+    persist_garmin_token_store = bool(save_garmin or saved_garmin_matches)
     if not (garmin_email and garmin_password):
         return fail(
             'Garmin credentials required for sync.',
@@ -1451,7 +1480,18 @@ def _sync_omron_core(
         )
 
     try:
-        added = sync_to_garmin(readings, garmin_email, garmin_password, garmin_region == "CN")
+        sync_result = sync_to_garmin(
+            readings,
+            garmin_email,
+            garmin_password,
+            garmin_region == "CN",
+            garmin_token_store,
+        )
+        if isinstance(sync_result, tuple):
+            added, refreshed_garmin_token_store = sync_result
+        else:
+            added = int(sync_result)
+            refreshed_garmin_token_store = ""
     except GarminSyncError as exc:
         return fail(str(exc), exc.status_code, readings_found=len(readings), readings_uploaded=0)
     except ValueError as exc:
@@ -1469,6 +1509,8 @@ def _sync_omron_core(
     try:
         if save_garmin and garmin_email and garmin_password:
             STORE.save_garmin_credentials(user_id, garmin_email, garmin_password, garmin_region)
+        if persist_garmin_token_store and refreshed_garmin_token_store:
+            STORE.save_garmin_token_store(user_id, refreshed_garmin_token_store)
         if save_omron and email and password and country:
             STORE.save_omron_credentials(user_id, email, password, country)
     except Exception:  # pylint: disable=broad-except
