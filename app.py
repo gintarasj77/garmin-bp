@@ -11,6 +11,8 @@ from functools import wraps
 from pathlib import Path
 
 from flask import Flask, abort, g, jsonify, redirect, render_template, request, session, url_for
+from garth import sso as garth_sso
+from garth.exc import GarthException, GarthHTTPError
 from garminconnect import Garmin
 from waitress import serve
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -1040,10 +1042,7 @@ def sync_to_garmin(
         raise ValueError('Garmin credentials are required.')
 
     gc = Garmin(email=email, password=password, is_cn=is_cn, prompt_mfa=None)
-    logged_in = gc.login()
-
-    if not logged_in:
-        raise ValueError('Garmin login failed. Please check your credentials.')
+    _login_garmin_client(gc)
 
     local_tz = datetime.now().astimezone().tzinfo
     existing = get_existing_bp_timestamps(gc, readings, local_tz)
@@ -1067,7 +1066,7 @@ def sync_to_garmin(
                 systolic=r['systolic'],
                 diastolic=r['diastolic'],
                 pulse=pulse_value,
-                notes=None,
+                notes="",
             )
         except Exception as exc:  # pylint: disable=broad-except
             raise ValueError(
@@ -1167,7 +1166,10 @@ def get_existing_bp_timestamps(gc: Garmin, readings: list[dict[str, int | dateti
     startdate = min_local.date().isoformat()
     enddate = max_local.date().isoformat()
 
-    gc_data = gc.get_blood_pressure(startdate=startdate, enddate=enddate)
+    try:
+        gc_data = gc.get_blood_pressure(startdate=startdate, enddate=enddate)
+    except (AssertionError, AttributeError, GarthException, GarthHTTPError) as exc:
+        raise _garmin_value_error("history lookup", exc) from exc
     summaries = gc_data.get('measurementSummaries', []) if isinstance(gc_data, dict) else []
 
     existing: set[int] = set()
@@ -1183,6 +1185,67 @@ def get_existing_bp_timestamps(gc: Garmin, readings: list[dict[str, int | dateti
             existing.add(int(dt_utc.timestamp()))
 
     return existing
+
+
+def _garmin_http_status(exc: GarthHTTPError) -> int | None:
+    response = getattr(exc.error, "response", None)
+    status_code = getattr(response, "status_code", None)
+    try:
+        return int(status_code) if status_code is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _garmin_value_error(step: str, exc: Exception) -> ValueError:
+    if isinstance(exc, GarthHTTPError):
+        status_code = _garmin_http_status(exc)
+        if step == "login" and status_code in {401, 403}:
+            return ValueError("Garmin login failed. Please check your credentials.")
+        if status_code is not None:
+            return ValueError(f"Garmin {step} failed with HTTP {status_code}.")
+
+    detail = str(exc).strip()
+    detail_lower = detail.lower()
+    if "mfa" in detail_lower:
+        return ValueError("Garmin account requires multi-factor authentication. This app does not support Garmin MFA yet.")
+    if step == "login" and "unexpected title" in detail_lower:
+        return ValueError("Garmin login failed. Garmin Connect rejected the login or requested an unsupported step.")
+    if detail:
+        return ValueError(f"Garmin {step} failed: {detail}")
+    return ValueError(f"Garmin {step} failed unexpectedly.")
+
+
+def _login_garmin_client(gc: Garmin) -> None:
+    try:
+        login_result = garth_sso.login(
+            gc.username,
+            gc.password,
+            client=gc.garth,
+            prompt_mfa=None,
+            return_on_mfa=True,
+        )
+    except (AssertionError, AttributeError, GarthException, GarthHTTPError) as exc:
+        raise _garmin_value_error("login", exc) from exc
+
+    if isinstance(login_result, dict) and login_result.get("needs_mfa"):
+        raise ValueError("Garmin account requires multi-factor authentication. This app does not support Garmin MFA yet.")
+    if not isinstance(login_result, tuple) or len(login_result) != 2:
+        raise ValueError("Garmin login failed. Garmin Connect returned an unexpected login response.")
+
+    oauth1_token, oauth2_token = login_result
+    gc.garth.configure(oauth1_token=oauth1_token, oauth2_token=oauth2_token)
+
+    try:
+        profile = gc.garth.profile
+        gc.display_name = profile["displayName"]
+        gc.full_name = profile["fullName"]
+        settings = gc.garth.connectapi(gc.garmin_connect_user_settings_url) or {}
+        if isinstance(settings, dict):
+            user_data = settings.get("userData", {})
+            if isinstance(user_data, dict):
+                gc.unit_system = user_data.get("measurementSystem")
+    except (AssertionError, AttributeError, KeyError, TypeError, GarthException, GarthHTTPError) as exc:
+        raise _garmin_value_error("login", exc) from exc
 
 
 @app.route('/', methods=['GET'])

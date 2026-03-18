@@ -35,11 +35,13 @@
         <div class="garmin-section">
           <div class="section-title">Garmin Connect</div>
           <div id="garmin-saved" class="connected-status{% if not credential_status.garmin.saved %} hidden{% endif %}">
-            <span class="status-dot"></span>
-            <span id="garmin-saved-label">
-              Encrypted Garmin credentials are saved on server for
-              {% if credential_status.garmin.is_cn %}Garmin China (garmin.cn){% else %}Garmin Global (garmin.com){% endif %}.
-            </span>
+            <div class="status-copy">
+              <span class="status-dot" aria-hidden="true"></span>
+              <span id="garmin-saved-label">
+                Encrypted Garmin credentials are saved on server for
+                {% if credential_status.garmin.is_cn %}Garmin China (garmin.cn){% else %}Garmin Global (garmin.com){% endif %}.
+              </span>
+            </div>
             <button type="button" id="garmin-disconnect" class="btn-secondary btn-inline btn-status-action">Clear saved</button>
           </div>
           <div id="garmin-fields"{% if credential_status.garmin.saved %} class="hidden"{% endif %}>
@@ -71,8 +73,10 @@
         <div class="garmin-section">
           <div class="section-title">OMRON Connect</div>
           <div id="omron-saved" class="connected-status{% if not credential_status.omron.saved %} hidden{% endif %}">
-            <span class="status-dot"></span>
-            Encrypted OMRON credentials are saved on server.
+            <div class="status-copy">
+              <span class="status-dot" aria-hidden="true"></span>
+              <span>Encrypted OMRON credentials are saved on server.</span>
+            </div>
             <button type="button" id="omron-disconnect" class="btn-secondary btn-inline btn-status-action">Clear saved</button>
           </div>
           <div id="omron-fields"{% if credential_status.omron.saved %} class="hidden"{% endif %}>

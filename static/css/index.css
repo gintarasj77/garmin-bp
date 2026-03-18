@@ -354,8 +354,9 @@
 
     .connected-status {
       display: flex;
-      align-items: center;
-      gap: 8px;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px 16px;
       padding: 12px;
       border-radius: 14px;
       background: var(--md-success-bg);
@@ -366,12 +367,22 @@
       flex-wrap: wrap;
     }
 
+    .status-copy {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      flex: 1 1 260px;
+      min-width: 0;
+      line-height: 1.45;
+    }
+
     .status-dot {
-      width: 8px;
-      height: 8px;
+      width: 10px;
+      height: 10px;
       border-radius: 50%;
       background: currentColor;
       flex: 0 0 auto;
+      margin-top: 0.38rem;
     }
 
     .btn-secondary {
@@ -394,6 +405,7 @@
 
     .btn-status-action {
       margin-left: auto;
+      flex: 0 0 auto;
     }
 
     .header-actions .logout-form {
@@ -503,6 +515,11 @@
 
       .btn-inline {
         min-height: 32px;
+      }
+
+      .btn-status-action {
+        width: 100%;
+        margin-left: 0;
       }
     }
 

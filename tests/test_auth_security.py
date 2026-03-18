@@ -7,6 +7,8 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
+from requests import HTTPError, Response
+
 
 TMP_DIR = Path(__file__).resolve().parent / ".tmp"
 TMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -776,6 +778,56 @@ class AuthSecurityTests(unittest.TestCase):
 
         history = self.store.list_sync_history(user_id, limit=20)
         self.assertEqual(len(history), 1)
+
+    def test_login_garmin_client_reports_mfa_requirement(self):
+        original_login = app_module.garth_sso.login
+
+        class FakeGarth:
+            profile = {"displayName": "Example", "fullName": "Example User"}
+
+            def configure(self, **_kwargs):
+                raise AssertionError("configure should not be called when MFA is required")
+
+        class FakeGarminClient:
+            username = "garmin@example.com"
+            password = "garmin-secret"
+            garth = FakeGarth()
+            garmin_connect_user_settings_url = "/userprofile-service/userprofile/user-settings"
+
+        app_module.garth_sso.login = lambda *args, **kwargs: {"needs_mfa": True, "client_state": {}}
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                app_module._login_garmin_client(FakeGarminClient())
+        finally:
+            app_module.garth_sso.login = original_login
+
+        self.assertIn("does not support Garmin MFA yet", str(ctx.exception))
+
+    def test_get_existing_bp_timestamps_reports_garmin_http_status(self):
+        response = Response()
+        response.status_code = 503
+        response.url = "https://connectapi.garmin.com/bloodpressure-service/bloodpressure/range/2026-01-01/2026-01-01"
+        http_error = HTTPError("503 Server Error", response=response)
+
+        class FakeGarminClient:
+            def get_blood_pressure(self, **_kwargs):
+                raise app_module.GarthHTTPError(msg="Error in request", error=http_error)
+
+        with self.assertRaises(ValueError) as ctx:
+            app_module.get_existing_bp_timestamps(
+                FakeGarminClient(),
+                [
+                    {
+                        "timestamp": datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+                        "systolic": 120,
+                        "diastolic": 80,
+                        "hr": 65,
+                    }
+                ],
+                timezone.utc,
+            )
+
+        self.assertEqual(str(ctx.exception), "Garmin history lookup failed with HTTP 503.")
 
     def test_concurrent_user_creation_assigns_single_admin(self):
         race_db_path = TMP_DIR / "race_store.db"
