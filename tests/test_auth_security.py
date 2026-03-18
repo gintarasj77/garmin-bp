@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from requests import HTTPError, Response
+from requests.exceptions import ConnectionError as RequestsConnectionError
 
 
 TMP_DIR = Path(__file__).resolve().parent / ".tmp"
@@ -813,7 +814,7 @@ class AuthSecurityTests(unittest.TestCase):
             def get_blood_pressure(self, **_kwargs):
                 raise app_module.GarthHTTPError(msg="Error in request", error=http_error)
 
-        with self.assertRaises(ValueError) as ctx:
+        with self.assertRaises(app_module.GarminSyncError) as ctx:
             app_module.get_existing_bp_timestamps(
                 FakeGarminClient(),
                 [
@@ -828,6 +829,107 @@ class AuthSecurityTests(unittest.TestCase):
             )
 
         self.assertEqual(str(ctx.exception), "Garmin history lookup failed with HTTP 503.")
+        self.assertEqual(ctx.exception.status_code, 502)
+
+    def test_sync_route_returns_garmin_sync_error_details(self):
+        created, message = self.store.create_user("garminsyncerror@example.com", "GarminSyncPass123!")
+        self.assertTrue(created, message)
+
+        class FakeMeasurement:
+            def __init__(self):
+                self.systolic = 121
+                self.diastolic = 81
+                self.pulse = 64
+                self.timeZone = timezone.utc
+                self.measurementDate = int(datetime(2026, 1, 5, 7, 0, tzinfo=timezone.utc).timestamp() * 1000)
+
+        original_load = app_module.load_omron_measurements
+        original_sync = app_module.sync_to_garmin
+        app_module.load_omron_measurements = lambda *_args, **_kwargs: [FakeMeasurement()]
+        app_module.sync_to_garmin = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            app_module.GarminSyncError("Garmin history lookup failed because Garmin Connect could not be reached.", 502)
+        )
+
+        try:
+            client = self.app.test_client()
+            login = self._login(client, "garminsyncerror@example.com", "GarminSyncPass123!")
+            self.assertEqual(login.status_code, 302)
+
+            csrf = self._csrf_for_path(client, "/")
+            response = client.post(
+                "/sync-omron",
+                data={
+                    "csrf_token": csrf,
+                    "omron_email": "omron@example.com",
+                    "omron_password": "omron-secret",
+                    "omron_country": "US",
+                    "garmin_email": "garmin@example.com",
+                    "garmin_password": "garmin-secret",
+                },
+                headers={"Accept": "application/json"},
+                follow_redirects=False,
+            )
+        finally:
+            app_module.load_omron_measurements = original_load
+            app_module.sync_to_garmin = original_sync
+
+        self.assertEqual(response.status_code, 502)
+        payload = response.get_json() or {}
+        self.assertEqual(
+            payload.get("error"),
+            "Garmin history lookup failed because Garmin Connect could not be reached.",
+        )
+
+    def test_sync_route_reports_unexpected_garmin_exception_type(self):
+        created, message = self.store.create_user("garminunexpected@example.com", "GarminUnexpected123!")
+        self.assertTrue(created, message)
+
+        class FakeMeasurement:
+            def __init__(self):
+                self.systolic = 122
+                self.diastolic = 82
+                self.pulse = 65
+                self.timeZone = timezone.utc
+                self.measurementDate = int(datetime(2026, 1, 6, 7, 0, tzinfo=timezone.utc).timestamp() * 1000)
+
+        original_load = app_module.load_omron_measurements
+        original_sync = app_module.sync_to_garmin
+        app_module.load_omron_measurements = lambda *_args, **_kwargs: [FakeMeasurement()]
+
+        def fail_sync(*_args, **_kwargs):
+            raise RequestsConnectionError("connection reset by peer")
+
+        app_module.sync_to_garmin = fail_sync
+
+        try:
+            client = self.app.test_client()
+            login = self._login(client, "garminunexpected@example.com", "GarminUnexpected123!")
+            self.assertEqual(login.status_code, 302)
+
+            csrf = self._csrf_for_path(client, "/")
+            response = client.post(
+                "/sync-omron",
+                data={
+                    "csrf_token": csrf,
+                    "omron_email": "omron@example.com",
+                    "omron_password": "omron-secret",
+                    "omron_country": "US",
+                    "garmin_email": "garmin@example.com",
+                    "garmin_password": "garmin-secret",
+                },
+                headers={"Accept": "application/json"},
+                follow_redirects=False,
+            )
+        finally:
+            app_module.load_omron_measurements = original_load
+            app_module.sync_to_garmin = original_sync
+
+        self.assertEqual(response.status_code, 502)
+        payload = response.get_json() or {}
+        self.assertEqual(
+            payload.get("error"),
+            "Garmin sync failed because Garmin Connect could not be reached.",
+        )
 
     def test_concurrent_user_creation_assigns_single_admin(self):
         race_db_path = TMP_DIR / "race_store.db"

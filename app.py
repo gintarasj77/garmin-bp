@@ -14,6 +14,8 @@ from flask import Flask, abort, g, jsonify, redirect, render_template, request, 
 from garth import sso as garth_sso
 from garth.exc import GarthException, GarthHTTPError
 from garminconnect import Garmin
+from requests.exceptions import ConnectionError as RequestsConnectionError
+from requests.exceptions import RequestException, SSLError, Timeout
 from waitress import serve
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -1076,6 +1078,12 @@ def sync_to_garmin(
     return added
 
 
+class GarminSyncError(Exception):
+    def __init__(self, message: str, status_code: int = 502):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 def login_omron(
     email: str,
     password: str,
@@ -1168,7 +1176,7 @@ def get_existing_bp_timestamps(gc: Garmin, readings: list[dict[str, int | dateti
 
     try:
         gc_data = gc.get_blood_pressure(startdate=startdate, enddate=enddate)
-    except (AssertionError, AttributeError, GarthException, GarthHTTPError) as exc:
+    except (AssertionError, AttributeError, GarthException, GarthHTTPError, RequestException) as exc:
         raise _garmin_value_error("history lookup", exc) from exc
     summaries = gc_data.get('measurementSummaries', []) if isinstance(gc_data, dict) else []
 
@@ -1196,11 +1204,30 @@ def _garmin_http_status(exc: GarthHTTPError) -> int | None:
         return None
 
 
-def _garmin_value_error(step: str, exc: Exception) -> ValueError:
+def _garmin_request_error(step: str, exc: RequestException) -> GarminSyncError:
+    if isinstance(exc, Timeout):
+        return GarminSyncError(f"Garmin {step} timed out while contacting Garmin Connect.", 504)
+    if isinstance(exc, SSLError):
+        return GarminSyncError(f"Garmin {step} failed due to an SSL/TLS error while contacting Garmin Connect.", 502)
+    if isinstance(exc, RequestsConnectionError):
+        return GarminSyncError(f"Garmin {step} failed because Garmin Connect could not be reached.", 502)
+    detail = str(exc).strip()
+    if detail:
+        return GarminSyncError(f"Garmin {step} request failed: {detail}", 502)
+    return GarminSyncError(f"Garmin {step} request failed unexpectedly.", 502)
+
+
+def _garmin_value_error(step: str, exc: Exception) -> ValueError | GarminSyncError:
+    if isinstance(exc, RequestException):
+        return _garmin_request_error(step, exc)
     if isinstance(exc, GarthHTTPError):
         status_code = _garmin_http_status(exc)
         if step == "login" and status_code in {401, 403}:
             return ValueError("Garmin login failed. Please check your credentials.")
+        if status_code == 429:
+            return GarminSyncError(f"Garmin {step} failed with HTTP 429.", 503)
+        if status_code is not None and status_code >= 500:
+            return GarminSyncError(f"Garmin {step} failed with HTTP {status_code}.", 502)
         if status_code is not None:
             return ValueError(f"Garmin {step} failed with HTTP {status_code}.")
 
@@ -1224,7 +1251,7 @@ def _login_garmin_client(gc: Garmin) -> None:
             prompt_mfa=None,
             return_on_mfa=True,
         )
-    except (AssertionError, AttributeError, GarthException, GarthHTTPError) as exc:
+    except (AssertionError, AttributeError, GarthException, GarthHTTPError, RequestException) as exc:
         raise _garmin_value_error("login", exc) from exc
 
     if isinstance(login_result, dict) and login_result.get("needs_mfa"):
@@ -1244,8 +1271,23 @@ def _login_garmin_client(gc: Garmin) -> None:
             user_data = settings.get("userData", {})
             if isinstance(user_data, dict):
                 gc.unit_system = user_data.get("measurementSystem")
-    except (AssertionError, AttributeError, KeyError, TypeError, GarthException, GarthHTTPError) as exc:
+    except (AssertionError, AttributeError, KeyError, TypeError, GarthException, GarthHTTPError, RequestException) as exc:
         raise _garmin_value_error("login", exc) from exc
+
+
+def _garmin_unexpected_error(exc: Exception) -> GarminSyncError:
+    if isinstance(exc, RequestException):
+        return _garmin_request_error("sync", exc)
+    detail = str(exc).strip()
+    if detail:
+        return GarminSyncError(
+            f"Garmin sync failed unexpectedly ({exc.__class__.__name__}: {detail}).",
+            500,
+        )
+    return GarminSyncError(
+        f"Garmin sync failed unexpectedly ({exc.__class__.__name__}).",
+        500,
+    )
 
 
 @app.route('/', methods=['GET'])
@@ -1380,13 +1422,16 @@ def _sync_omron_core(
 
     try:
         added = sync_to_garmin(readings, garmin_email, garmin_password, garmin_region == "CN")
+    except GarminSyncError as exc:
+        return fail(str(exc), exc.status_code, readings_found=len(readings), readings_uploaded=0)
     except ValueError as exc:
         return fail(str(exc), 400, readings_found=len(readings), readings_uploaded=0)
-    except Exception:  # pylint: disable=broad-except
+    except Exception as exc:  # pylint: disable=broad-except
         app.logger.exception('Garmin sync failed unexpectedly.')
+        unexpected_error = _garmin_unexpected_error(exc)
         return fail(
-            'Garmin sync failed due to an internal server error.',
-            500,
+            str(unexpected_error),
+            unexpected_error.status_code,
             readings_found=len(readings),
             readings_uploaded=0,
         )
