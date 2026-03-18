@@ -98,6 +98,8 @@ STORE = SecureStore(
     audit_max_rows=_audit_max_rows,
 )
 
+GARMIN_RETRY_STATUS_FORCELIST = (408, 500, 502, 503, 504)
+
 if _database_url:
     app.logger.info("Credential store backend: PostgreSQL (DATABASE_URL).")
 else:
@@ -1204,7 +1206,34 @@ def _garmin_http_status(exc: GarthHTTPError) -> int | None:
         return None
 
 
+def _garmin_is_rate_limited(exc: Exception) -> bool:
+    if isinstance(exc, GarthHTTPError):
+        return _garmin_http_status(exc) == 429
+
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    try:
+        if status_code is not None and int(status_code) == 429:
+            return True
+    except (TypeError, ValueError):
+        pass
+
+    detail_lower = str(exc).strip().lower()
+    if "429" not in detail_lower:
+        return False
+    return any(marker in detail_lower for marker in ("too many", "rate limit", "retry after"))
+
+
+def _garmin_rate_limit_error(step: str) -> GarminSyncError:
+    return GarminSyncError(
+        f"Garmin {step} is being rate-limited by Garmin Connect. Wait and try again later.",
+        503,
+    )
+
+
 def _garmin_request_error(step: str, exc: RequestException) -> GarminSyncError:
+    if _garmin_is_rate_limited(exc):
+        return _garmin_rate_limit_error(step)
     if isinstance(exc, Timeout):
         return GarminSyncError(f"Garmin {step} timed out while contacting Garmin Connect.", 504)
     if isinstance(exc, SSLError):
@@ -1225,7 +1254,7 @@ def _garmin_value_error(step: str, exc: Exception) -> ValueError | GarminSyncErr
         if step == "login" and status_code in {401, 403}:
             return ValueError("Garmin login failed. Please check your credentials.")
         if status_code == 429:
-            return GarminSyncError(f"Garmin {step} failed with HTTP 429.", 503)
+            return _garmin_rate_limit_error(step)
         if status_code is not None and status_code >= 500:
             return GarminSyncError(f"Garmin {step} failed with HTTP {status_code}.", 502)
         if status_code is not None:
@@ -1243,6 +1272,7 @@ def _garmin_value_error(step: str, exc: Exception) -> ValueError | GarminSyncErr
 
 
 def _login_garmin_client(gc: Garmin) -> None:
+    gc.garth.configure(status_forcelist=GARMIN_RETRY_STATUS_FORCELIST)
     try:
         login_result = garth_sso.login(
             gc.username,

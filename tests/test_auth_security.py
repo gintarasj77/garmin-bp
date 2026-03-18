@@ -785,9 +785,10 @@ class AuthSecurityTests(unittest.TestCase):
 
         class FakeGarth:
             profile = {"displayName": "Example", "fullName": "Example User"}
+            configure_calls: list[dict[str, object]] = []
 
-            def configure(self, **_kwargs):
-                raise AssertionError("configure should not be called when MFA is required")
+            def configure(self, **kwargs):
+                self.configure_calls.append(kwargs)
 
         class FakeGarminClient:
             username = "garmin@example.com"
@@ -803,6 +804,54 @@ class AuthSecurityTests(unittest.TestCase):
             app_module.garth_sso.login = original_login
 
         self.assertIn("does not support Garmin MFA yet", str(ctx.exception))
+        self.assertEqual(len(FakeGarminClient.garth.configure_calls), 1)
+        self.assertEqual(
+            FakeGarminClient.garth.configure_calls[0].get("status_forcelist"),
+            app_module.GARMIN_RETRY_STATUS_FORCELIST,
+        )
+
+    def test_login_garmin_client_reports_rate_limit_without_retrying_429(self):
+        original_login = app_module.garth_sso.login
+
+        class FakeGarth:
+            profile = {"displayName": "Example", "fullName": "Example User"}
+
+            def __init__(self):
+                self.configure_calls: list[dict[str, object]] = []
+
+            def configure(self, **kwargs):
+                self.configure_calls.append(kwargs)
+
+        class FakeGarminClient:
+            username = "garmin@example.com"
+            password = "garmin-secret"
+            garth = FakeGarth()
+            garmin_connect_user_settings_url = "/userprofile-service/userprofile/user-settings"
+
+        app_module.garth_sso.login = lambda *args, **kwargs: (_ for _ in ()).throw(
+            RequestsConnectionError(
+                "HTTPSConnectionPool(host='connectapi.garmin.com', port=443): "
+                "Max retries exceeded with url: /oauth-service/oauth/preauthorized "
+                "(Caused by ResponseError('too many 429 error responses'))"
+            )
+        )
+        try:
+            with self.assertRaises(app_module.GarminSyncError) as ctx:
+                app_module._login_garmin_client(FakeGarminClient())
+        finally:
+            app_module.garth_sso.login = original_login
+
+        self.assertEqual(
+            str(ctx.exception),
+            "Garmin login is being rate-limited by Garmin Connect. Wait and try again later.",
+        )
+        self.assertEqual(ctx.exception.status_code, 503)
+        self.assertEqual(len(FakeGarminClient.garth.configure_calls), 1)
+        self.assertEqual(
+            FakeGarminClient.garth.configure_calls[0].get("status_forcelist"),
+            app_module.GARMIN_RETRY_STATUS_FORCELIST,
+        )
+        self.assertNotIn(429, FakeGarminClient.garth.configure_calls[0].get("status_forcelist", ()))
 
     def test_get_existing_bp_timestamps_reports_garmin_http_status(self):
         response = Response()
