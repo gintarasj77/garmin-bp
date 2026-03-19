@@ -2,8 +2,6 @@
 
 Flask web app to sync OMRON Connect blood pressure readings to Garmin Connect.
 
-Live app: https://garmin-bp.onrender.com/
-
 ## Requirements
 
 - Python 3.11+ (project uses `enum.StrEnum`)
@@ -46,7 +44,7 @@ Live app: https://garmin-bp.onrender.com/
 - `SESSION_LIFETIME_HOURS`:
   - Session lifetime in hours (default `12`)
 - `DATABASE_URL`:
-  - PostgreSQL connection string (recommended for Render free and production)
+  - PostgreSQL connection string for external database storage
   - Example: `postgresql://user:pass@host:5432/dbname?sslmode=require`
 - `APP_DB_PATH`:
   - SQLite database path (default `data/app.db`)
@@ -66,7 +64,7 @@ Live app: https://garmin-bp.onrender.com/
   - `1`: keep public registration enabled
 - `TRUST_PROXY_COUNT`:
   - Number of trusted proxy hops for `X-Forwarded-*` processing via Werkzeug `ProxyFix`
-  - Default: `1` on Render, otherwise `0`
+  - Default: `0`
 - `HSTS_ENABLED`:
   - `1` in production by default; set `0` to disable `Strict-Transport-Security`
 - `PASSWORD_RESET_TOKEN_TTL_SECONDS`:
@@ -76,7 +74,7 @@ Live app: https://garmin-bp.onrender.com/
 - `AUDIT_MAX_ROWS`:
   - Hard cap target for audit trail table size (default `200000`)
 - `APP_BASE_URL`:
-  - Public app base URL used in reset email links (for example, `https://your-app.onrender.com`)
+  - Public app base URL used in reset email links (for example, `https://sync.example.com`)
 - `SMTP_HOST` / `SMTP_PORT` / `SMTP_USE_TLS`:
   - SMTP server settings for password reset emails
 - `SMTP_USERNAME` / `SMTP_PASSWORD`:
@@ -152,23 +150,6 @@ By default, app binds to `127.0.0.1`. For LAN/public exposure:
    - Admin users page
 4. Delete temporary branch after validation.
 
-## Render deploy
-
-1. Push this folder to a Git repository.
-2. In Render, create a **Web Service** from the repo.
-3. Set environment variables in Render:
-   - `FLASK_SECRET_KEY`
-   - `CREDENTIALS_ENCRYPTION_KEY`
-   - `SESSION_COOKIE_SECURE=1`
-   - `DATABASE_URL=<your-postgres-connection-string>`
-4. Use:
-   - Build command: `pip install -r requirements.txt`
-   - Start command: `python app.py --host 0.0.0.0 --port $PORT`
-5. In Render service settings, set:
-   - Health Check Path: `/readyz`
-
-The app includes a `Procfile` for start-command autodetection.
-
 ## First-time setup
 
 1. Open the app and create the first account. It becomes the initial admin.
@@ -198,7 +179,7 @@ The app includes a `Procfile` for start-command autodetection.
 - Stored credentials are per app user account.
 - Retry uses the currently saved encrypted Garmin and OMRON credentials.
 - "Clear saved" clears locally saved encrypted credentials in this app; it does not revoke access at Garmin or OMRON.
-- Prefer `DATABASE_URL` for persistent storage on Render free (ephemeral filesystem can lose SQLite data on redeploy).
+- Prefer `DATABASE_URL` if you want credentials and history stored outside the local SQLite file.
 - If `CREDENTIALS_ENCRYPTION_KEY` changes, previously saved credentials cannot be decrypted.
 - Keep backup artifacts private and rotate `NEON_DATABASE_URL` if exposure is suspected.
 - Use HTTPS in production.

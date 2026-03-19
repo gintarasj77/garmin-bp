@@ -33,10 +33,8 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
-_is_production = _env_flag("PRODUCTION", False) or _env_flag("RENDER", False) or (
-    os.getenv("FLASK_ENV", "").strip().lower() == "production"
-)
-_trust_proxy_count = int(os.getenv("TRUST_PROXY_COUNT", "1" if _env_flag("RENDER", False) else "0"))
+_is_production = _env_flag("PRODUCTION", False) or (os.getenv("FLASK_ENV", "").strip().lower() == "production")
+_trust_proxy_count = int(os.getenv("TRUST_PROXY_COUNT", "0"))
 if _trust_proxy_count > 0:
     app.wsgi_app = ProxyFix(
         app.wsgi_app,  # type: ignore[assignment]
@@ -104,10 +102,6 @@ if _database_url:
     app.logger.info("Credential store backend: PostgreSQL (DATABASE_URL).")
 else:
     app.logger.info("Credential store backend: SQLite (%s).", _sqlite_path)
-    app.logger.warning(
-        "SQLite on ephemeral filesystems may lose accounts/credentials after redeploy. "
-        "Set DATABASE_URL for persistent storage."
-    )
 
 if not _secret_from_env:
     app.logger.warning("FLASK_SECRET_KEY is not set. Generated an ephemeral key for this process.")
